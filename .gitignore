@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+env/
+
+# Project-specific runtime data
+cache/
+logs/
+runs/
+store/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets and local config (uncomment if you have these)
+# .env
+# config.local.yaml
+# secrets.yaml
+
+# Test files and user transcripts
+inbox/
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/

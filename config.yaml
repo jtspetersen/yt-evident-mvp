@@ -1,0 +1,51 @@
+ollama:
+  base_url: "http://localhost:11434"
+
+  # Split models
+  model_extract: "qwen2.5:7b"
+  model_verify: "qwen3:30b"
+  model_write: "qwen3:30b"
+
+  temperature_extract: 0.1
+  temperature_verify: 0.0
+  temperature_write: 0.3
+
+searx:
+  base_url: "http://localhost:8080"
+  format: "json"
+  num_results: 10
+
+  # Junk reduction (domain filtering)
+  deny_domains:
+    - "pinterest.com"
+    - "facebook.com"
+    - "twitter.com"
+    - "x.com"
+    - "tiktok.com"
+    - "instagram.com"
+    - "medium.com"
+    - "substack.com"
+
+budgets:
+  max_claims: 15
+  max_sources_per_claim: 4
+  max_failures_per_domain: 6
+  max_fetches_per_run: 40
+  fetch_timeout_sec: 20
+  snippets_per_source: 3
+  snippet_max_chars: 800
+
+  # Second pass settings (only for high-severity UNCERTAIN)
+  second_pass_enabled: true
+  second_pass_max_claims: 8
+  second_pass_extra_sources_per_claim: 5
+  second_pass_extra_fetches: 40
+
+output:
+  timezone: "America/Los_Angeles"
+
+logging:
+  level: "INFO"
+
+cache:
+  url_cache_days: 7
