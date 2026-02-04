@@ -15,7 +15,7 @@ env/
 cache/
 logs/
 runs/
-store/
+/store/
 
 # IDE
 .vscode/
