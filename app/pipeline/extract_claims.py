@@ -36,7 +36,17 @@ def extract_claims(ollama_base: str, model: str, transcript_json: dict, max_clai
     user = json.dumps(transcript_json, ensure_ascii=False)
     raw = ollama_chat(ollama_base, model, SYSTEM, user, temperature=temperature)
 
-    data = extract_json(raw)
+    try:
+        data = extract_json(raw)
+    except Exception as e:
+        import sys
+        print(f"WARNING: Claim extraction JSON parse failed ({type(e).__name__}: {e}). Returning 0 claims.", file=sys.stderr)
+        return []
+
+    if not isinstance(data, list):
+        import sys
+        print(f"WARNING: Claim extraction returned {type(data).__name__} instead of list. Returning 0 claims.", file=sys.stderr)
+        return []
 
     claims = []
     for i, item in enumerate(data[:max_claims], start=1):

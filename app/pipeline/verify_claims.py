@@ -360,15 +360,30 @@ def verify_one(ollama_base: str, model: str, claim, evidence_bundle, outdir: str
     try:
         data = extract_json(raw)
     except Exception:
-        raw2 = ollama_chat(
-            ollama_base, model, RETRY_SYSTEM, user,
-            temperature=0.0,
-            force_json=True,
-            timeout_sec=900
-        )
-        with open(os.path.join(outdir, f"raw_verifier_{claim.claim_id}_retry.txt"), "w", encoding="utf-8") as f:
-            f.write(raw2)
-        data = extract_json(raw2)
+        try:
+            raw2 = ollama_chat(
+                ollama_base, model, RETRY_SYSTEM, user,
+                temperature=0.0,
+                force_json=True,
+                timeout_sec=900
+            )
+            with open(os.path.join(outdir, f"raw_verifier_{claim.claim_id}_retry.txt"), "w", encoding="utf-8") as f:
+                f.write(raw2)
+            data = extract_json(raw2)
+        except Exception as e:
+            # Fallback: return UNCERTAIN instead of crashing the whole run
+            return Verdict(
+                claim_id=claim.claim_id,
+                rating="UNCERTAIN",
+                confidence=0.3,
+                explanation=f"Verification failed after retry: {type(e).__name__}: {e}",
+                corrected_claim=None,
+                severity="medium",
+                source_tiers_used=[],
+                red_flags=["verification_parse_failure"],
+                citations=[],
+                missing_info=["LLM output could not be parsed into a valid verdict."]
+            )
 
     data = _normalize(data, claim.claim_id, compact)
     data = _apply_archetype_gate(data, getattr(claim, "claim_type", "") or "")
