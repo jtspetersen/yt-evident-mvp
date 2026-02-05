@@ -1,0 +1,39 @@
+# AMD GPU override for Ollama service with ROCm
+# Usage: docker compose -f docker-compose.yml -f docker-compose.amd.yml up
+#
+# Prerequisites:
+#   - ROCm 6.1+ installed on host
+#   - Supported AMD GPU (RX 6000/7000 series, MI series)
+#   - Ollama image with ROCm support (or use ollama/ollama:rocm if available)
+#
+# Note: AMD GPU support in Docker on Windows requires:
+#   - Windows Subsystem for Linux (WSL2) with ROCm
+#   - Or native Windows ROCm support (if available)
+
+services:
+  ollama:
+    # Uncomment to use ROCm-specific image if available
+    # image: ollama/ollama:rocm
+
+    devices:
+      # AMD GPU device access (Linux)
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+
+    environment:
+      # ROCm environment variables
+      - HSA_OVERRIDE_GFX_VERSION=11.0.0  # For RX 7900 XTX (gfx1100)
+      - ROCM_PATH=/opt/rocm
+      - HIP_VISIBLE_DEVICES=0
+      - GPU_DEVICE_ORDINAL=0
+
+    # Security options for GPU access
+    security_opt:
+      - seccomp:unconfined
+
+    # Group add for video group access (typically GID 44 or 109)
+    group_add:
+      - video
+
+    # Note: If running on Windows, device paths may differ
+    # You may need to customize this based on your WSL2/Windows ROCm setup

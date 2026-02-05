@@ -1,163 +1,187 @@
-# YT Evident - Fact Checker MVP
+# Evident Video Fact Checker
 
 A local fact-checking pipeline for analyzing video transcripts and verifying claims using evidence-based research.
 
 ## Features
 
-### Core Capabilities
 - **Transcript ingestion** - Handles fragmented YouTube transcripts with speaker detection
 - **Claim extraction** - Overlapping chunks prevent missing claims at segment boundaries
 - **Evidence retrieval** - 6-tier quality system prioritizes scholarly sources over forums/blogs
 - **Claim verification** - LLM reasoning with citations, confidence scoring, and rhetorical analysis
 - **Report generation** - Detailed verdicts, 0-100 truthfulness score, and video script outline
 
-### Recent Improvements (2026-02-05)
-- Overlapping chunks with deduplication
-- Enhanced 6-tier source quality filtering (see Configuration)
-- Complete, self-contained claim extraction
-- Rhetorical manipulation detection (false causation, cherry-picking)
+## Quick Start
+
+### Option 1: Native Setup (Recommended for Windows with GPU)
+
+```bash
+# 1. Install dependencies
+pip install -r Requirements.txt
+
+# 2. Ensure services are running:
+#    - Ollama (with GPU): ollama serve
+#    - SearXNG: docker compose -f docker/docker-compose.yml up -d searxng redis
+
+# 3. Run the pipeline
+./run.sh --infile "inbox/transcript.txt" --channel "Channel Name"
+```
+
+### Option 2: Full Docker Setup
+
+```bash
+# 1. Run interactive setup wizard
+python setup.py
+
+# 2. Start services
+docker compose -f docker/docker-compose.yml up -d
+
+# 3. Run pipeline (in Docker)
+docker compose -f docker/docker-compose.yml run --rm app python -m app.main --infile inbox/transcript.txt
+```
 
 ## Project Structure
 
 ```
-yt-evident-mvp/
-├── app/
-│   ├── pipeline/      # Core processing stages
-│   ├── schemas/       # Data models (Pydantic)
-│   ├── store/         # Data persistence
-│   └── tools/         # Utilities (fetch, parse, ollama client)
-├── inbox/             # Input transcripts
-├── runs/              # Output directories (timestamped)
-├── config.yaml        # Configuration
-├── run.sh             # Legacy run script
-└── runvid             # Main run script (auto-activates venv)
+evident-video-fact-checker/
+├── app/                    # Application code
+│   ├── main.py             # CLI entry point
+│   ├── pipeline/           # Processing stages
+│   ├── schemas/            # Pydantic models
+│   ├── store/              # Store modules
+│   └── tools/              # Utilities (fetch, parse, ollama)
+├── docker/                 # Docker configuration
+│   ├── docker-compose.yml
+│   ├── docker-compose.gpu.yml      # NVIDIA GPU override
+│   ├── docker-compose.amd.yml      # AMD ROCm override
+│   └── Dockerfile
+├── inbox/                  # Input transcripts
+├── runs/                   # Output directories (timestamped)
+├── cache/                  # URL cache (gitignored)
+├── store/                  # Persistent storage (gitignored)
+├── searxng/                # SearXNG configuration
+├── config.yaml             # Application config
+├── .env                    # Environment variables
+├── run.sh                  # Run script
+├── setup.py                # Interactive setup wizard
+└── Makefile                # Make commands
 ```
 
-## Setup
-
-1. **Create virtual environment:**
-   ```bash
-   python -m venv venv
-   ```
-
-2. **Install dependencies:**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-3. **Configure `config.yaml`** (see Configuration section below)
-
-4. **Run the pipeline:**
-   ```bash
-   ./runvid
-   ```
-
 ## Usage
-
-The `runvid` script automatically activates the virtual environment and runs the pipeline.
 
 ### Command-Line Flags
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--infile <path>` | Path to transcript file (.txt or .md) | Newest file in `inbox/` |
-| `--channel <name>` | Channel/creator name for this run | Inferred from filename |
-| `--review` | Interactive mode: review/edit/drop claims before verification | Disabled |
-| `--quiet` | Suppress DEBUG/INFO output (errors/warnings only) | Disabled |
-| `--verbose` | Show all DEBUG output (overrides --quiet) | Disabled |
+| `--infile <path>` | Path to transcript file | Newest in `inbox/` |
+| `--channel <name>` | Channel/creator name | Inferred from filename |
+| `--review` | Interactive claim review mode | Disabled |
+| `--verbose` | Show DEBUG output | Disabled |
+| `--quiet` | Errors/warnings only | Disabled |
 
 ### Examples
 
 ```bash
-# Basic: auto-detect newest file in inbox/
-./runvid
+# Native execution (recommended for Windows with GPU)
+./run.sh --infile "inbox/transcript.txt" --channel "Channel Name"
 
-# Specify file and channel
-./runvid --infile inbox/transcript.txt --channel "Channel Name"
+# With interactive review
+./run.sh --infile "inbox/transcript.txt" --review --verbose
 
-# Enable interactive claim review
-./runvid --infile inbox/transcript.txt --review
+# Direct Python
+python -m app.main --infile "inbox/transcript.txt" --channel "Channel Name"
+```
 
-# Debug mode (verbose logging)
-./runvid --verbose
+## Configuration
 
-# Quiet mode (errors only)
-./runvid --quiet
+### Environment Variables (.env)
 
-# Direct Python (no venv auto-activation)
-python -m app.main --infile inbox/transcript.txt --review
+```bash
+# Service URLs
+EVIDENT_OLLAMA_BASE_URL=http://localhost:11434
+EVIDENT_SEARXNG_BASE_URL=http://localhost:8080
+
+# Model selections
+EVIDENT_MODEL_EXTRACT=qwen3:8b
+EVIDENT_MODEL_VERIFY=qwen3:30b
+EVIDENT_MODEL_WRITE=gemma3:27b
+```
+
+### config.yaml
+
+```yaml
+ollama:
+  model_extract: "qwen3:8b"      # Claim extraction
+  model_verify: "qwen3:30b"      # Verification
+  model_write: "gemma3:27b"      # Script writing
+
+budgets:
+  max_claims: 25
+  max_sources_per_claim: 5
+  max_fetches_per_run: 80
+```
+
+### Source Quality Tiers
+
+The pipeline uses a 6-tier source quality system:
+
+| Tier | Description | Examples |
+|------|-------------|----------|
+| 1 | Top scholarly journals | Nature, Science, NEJM |
+| 2 | Academic institutions | .edu, .ac.uk |
+| 3 | Government/International orgs | .gov, WHO, UN |
+| 4 | Research organizations | Pew Research, Brookings |
+| 5 | Established news agencies | Reuters, AP, BBC |
+| 6 | Everything else | - |
+
+## Output
+
+Each run creates a timestamped directory:
+
+```
+runs/YYYYMMDD_HHMMSS__channel__video_title/
+├── 00_transcript.raw.txt           # Original input
+├── 01_transcript.json              # Normalized segments
+├── 02_claims.json                  # Extracted claims
+├── 03_sources.json                 # Retrieved evidence
+├── 04_snippets.json                # Evidence snippets
+├── 05_verdicts.json                # Verification results
+├── 06_scorecard.md                 # Summary (0-100 score)
+├── 07_08_review_outline_and_script.md  # Video script
+├── run.json                        # Run metadata
+└── run.log                         # Execution log
 ```
 
 ## Requirements
 
-- Python 3.11+
-- Ollama (for LLM verification)
-- SearX instance (for evidence retrieval)
+- **Python 3.11+**
+- **Ollama** - Local LLM server (GPU recommended)
+- **SearXNG** - Metasearch engine for evidence retrieval
+- **Redis** - For SearXNG caching
 
-## Configuration
+### Hardware Recommendations
 
-The `config.yaml` file controls all pipeline behavior:
+| VRAM | RAM | Recommended Models |
+|------|-----|-------------------|
+| 24GB+ | 32GB+ | qwen3:30b, gemma3:27b |
+| 12-16GB | 32GB+ | qwen3:14b, llama3:8b |
+| 8GB | 16GB+ | qwen3:8b, llama3:8b |
+| None | 32GB+ | qwen3:8b (CPU mode) |
 
-### Models
-```yaml
-ollama:
-  model_extract: "qwen3:8b"      # Lightweight model for claim extraction
-  model_verify: "qwen3:30b"      # Stronger model for verification
-  model_write: "gemma3:27b"      # Creative model for script writing
+## Make Commands
+
+```bash
+make help              # Show all commands
+make setup             # Run setup wizard
+make runvid ARGS='...' # Run natively (recommended)
+make start             # Start Docker services
+make stop              # Stop Docker services
+make status            # Show service status
+make logs              # Tail all logs
+make models            # List Ollama models
 ```
 
-### Search & Evidence Quality
-```yaml
-searx:
-  deny_domains:                   # Excluded sources (forums, blogs, social media)
-    - reddit.com
-    - quora.com
-    - wordpress.com
-    # ... etc
-```
+## Documentation
 
-The pipeline uses a 6-tier source quality system:
-- **Tier 1**: Top scholarly journals (Nature, Science, NEJM, etc.)
-- **Tier 2**: Academic institutions (.edu, .ac.uk)
-- **Tier 3**: Government and international organizations (.gov, WHO, UN)
-- **Tier 4**: Research organizations and think tanks (Pew Research, Brookings, etc.)
-- **Tier 5**: Established news agencies (Reuters, AP, BBC, NPR)
-- **Tier 6**: Everything else
-
-### Budgets
-```yaml
-budgets:
-  max_claims: 25                  # Maximum claims to extract per video
-  max_sources_per_claim: 5        # Search results per claim
-  max_fetches_per_run: 80         # Total URL fetches allowed
-  fetch_timeout_sec: 25           # Timeout for each URL fetch
-```
-
-## Output
-
-Each run creates a timestamped directory in `runs/` with the following artifacts:
-
-```
-runs/YYYYMMDD_HHMMSS__channel_name__video_title/
-├── 00_transcript.raw.txt           # Original input transcript
-├── 01_transcript.json              # Normalized transcript with segments
-├── 02_claims.json                  # All extracted claims
-├── 02_claims.reviewed.json         # Claims after review (if --review used)
-├── 03_sources.json                 # Evidence sources retrieved
-├── 04_snippets.json                # Relevant evidence snippets
-├── 05_verdicts.json                # Verification results for each claim
-├── 06_scorecard.md                 # Summary scorecard (0-100 score)
-├── 07_08_review_outline_and_script.md  # YouTube review video script
-├── run.json                        # Run metadata and configuration
-└── run.log                         # Execution log with timing info
-```
-
-### Pipeline Stages
-
-1. **Normalize** - Parse and structure transcript segments
-2. **Extract** - LLM identifies claims using overlapping chunks
-3. **Review** (optional) - Interactive claim editing
-4. **Retrieve** - Web search with tiered source quality filtering
-5. **Verify** - LLM evaluation with citations and rhetorical analysis
-6. **Score** - Aggregate verdicts (0-100 scale)
-7. **Write** - Generate video script and outline
+- [DOCKER.md](DOCKER.md) - Detailed Docker setup guide
+- [MIGRATION.md](MIGRATION.md) - Migration from legacy setup
+- [CLAUDE.md](CLAUDE.md) - Project context for AI assistants

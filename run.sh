@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
-source .venv/Scripts/activate
-python -m app.main
+
+# Run the Evident Video Fact Checker pipeline
+# Usage: ./run.sh --infile inbox/transcript.txt --channel "ChannelName"
+#        ./run.sh --infile inbox/transcript.txt --review
+
+python -m app.main "$@"

@@ -1,0 +1,91 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: evident-redis
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - evident-net
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: evident-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ./data/ollama:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    networks:
+      - evident-net
+
+  searxng:
+    image: searxng/searxng:latest
+    container_name: evident-searxng
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./searxng:/etc/searxng:rw
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:8080
+      - BIND_ADDRESS=0.0.0.0:8080
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/search?q=test&format=json"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks:
+      - evident-net
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: evident-app
+    restart: "no"  # Don't restart automatically (user-triggered runs)
+    volumes:
+      - ./data/cache:/app/cache
+      - ./data/runs:/app/runs
+      - ./data/store:/app/store
+      - ./data/inbox:/app/inbox
+      - ./data/logs:/app/logs
+      - ./config.yaml:/app/config.yaml:ro
+    environment:
+      - EVIDENT_OLLAMA_BASE_URL=http://ollama:11434
+      - EVIDENT_SEARXNG_BASE_URL=http://searxng:8080
+    env_file:
+      - .env
+    depends_on:
+      ollama:
+        condition: service_healthy
+      searxng:
+        condition: service_healthy
+    networks:
+      - evident-net
+    command: ["python", "-m", "app.main"]
+
+volumes:
+  redis-data:
+
+networks:
+  evident-net:
+    driver: bridge

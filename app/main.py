@@ -7,6 +7,7 @@ import argparse
 import re
 import traceback
 from datetime import datetime, timezone
+from dotenv import load_dotenv
 
 from app.tools.logger import make_run_logger
 from app.store.run_index import append_run_index
@@ -34,8 +35,63 @@ def should_log(level: str) -> bool:
 
 
 def load_config():
+    """
+    Load configuration from config.yaml and apply environment variable overrides.
+    Configuration hierarchy (highest to lowest precedence):
+    1. Environment variables (EVIDENT_*)
+    2. .env file
+    3. config.yaml
+    """
+    # Load .env file if it exists (does not override existing env vars)
+    load_dotenv(override=False)
+
+    # Load base config from YAML
     with open("config.yaml", "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+        cfg = yaml.safe_load(f)
+
+    # Apply environment variable overrides
+    cfg["ollama"]["base_url"] = os.getenv(
+        "EVIDENT_OLLAMA_BASE_URL",
+        cfg["ollama"]["base_url"]
+    )
+    cfg["ollama"]["model_extract"] = os.getenv(
+        "EVIDENT_MODEL_EXTRACT",
+        cfg["ollama"]["model_extract"]
+    )
+    cfg["ollama"]["model_verify"] = os.getenv(
+        "EVIDENT_MODEL_VERIFY",
+        cfg["ollama"]["model_verify"]
+    )
+    cfg["ollama"]["model_write"] = os.getenv(
+        "EVIDENT_MODEL_WRITE",
+        cfg["ollama"]["model_write"]
+    )
+    cfg["ollama"]["temperature_extract"] = float(os.getenv(
+        "EVIDENT_TEMPERATURE_EXTRACT",
+        cfg["ollama"].get("temperature_extract", 0.1)
+    ))
+    cfg["ollama"]["temperature_verify"] = float(os.getenv(
+        "EVIDENT_TEMPERATURE_VERIFY",
+        cfg["ollama"].get("temperature_verify", 0.0)
+    ))
+    cfg["ollama"]["temperature_write"] = float(os.getenv(
+        "EVIDENT_TEMPERATURE_WRITE",
+        cfg["ollama"].get("temperature_write", 0.5)
+    ))
+    cfg["searx"]["base_url"] = os.getenv(
+        "EVIDENT_SEARXNG_BASE_URL",
+        cfg["searx"]["base_url"]
+    )
+    cfg["budgets"]["max_claims"] = int(os.getenv(
+        "EVIDENT_MAX_CLAIMS",
+        cfg.get("budgets", {}).get("max_claims", 25)
+    ))
+    cfg["cache"]["url_cache_days"] = int(os.getenv(
+        "EVIDENT_CACHE_TTL_DAYS",
+        cfg.get("cache", {}).get("url_cache_days", 7)
+    ))
+
+    return cfg
 
 
 def read_file(path: str) -> str:

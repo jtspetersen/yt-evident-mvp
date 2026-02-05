@@ -1,0 +1,28 @@
+# Native Ollama mode - use host's Ollama installation instead of Docker
+# Usage: docker compose -f docker-compose.yml -f docker-compose.native-ollama.yml up
+#
+# This is for Windows/macOS where native Ollama already has GPU support
+# and Docker GPU passthrough is not available or not needed.
+
+services:
+  # Disable the Docker Ollama service
+  ollama:
+    profiles:
+      - disabled  # This prevents the service from starting
+
+  # SearXNG doesn't depend on Ollama anymore
+  searxng:
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # App connects to host's Ollama
+  app:
+    depends_on:
+      redis:
+        condition: service_healthy
+      searxng:
+        condition: service_healthy
+    environment:
+      # Point to host's Ollama (host.docker.internal resolves to host on Docker Desktop)
+      - EVIDENT_OLLAMA_URL=http://host.docker.internal:11434

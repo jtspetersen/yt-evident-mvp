@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-YT Evident MVP is a Python-based fact-checking pipeline for YouTube transcripts. It extracts claims from video transcripts, searches for evidence via web sources, verifies claims using LLM reasoning, and generates fact-check reports with video scripts.
+Evident Video Fact Checker is a Python-based fact-checking pipeline for YouTube transcripts. It extracts claims from video transcripts, searches for evidence via web sources, verifies claims using LLM reasoning, and generates fact-check reports with video scripts.
 
 ## Tech Stack
 
