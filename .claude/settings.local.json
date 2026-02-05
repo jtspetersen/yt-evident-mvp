@@ -3,7 +3,8 @@
     "allow": [
       "Bash(python:*)",
       "Bash(.venv/Scripts/pip install -r Requirements.txt)",
-      "Bash(.venv/Scripts/python:*)"
+      "Bash(.venv/Scripts/python:*)",
+      "Bash(git merge:*)"
     ]
   }
 }
