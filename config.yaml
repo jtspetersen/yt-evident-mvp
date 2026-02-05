@@ -1,14 +1,14 @@
 ollama:
   base_url: "http://localhost:11434"
 
-  # Split models
-  model_extract: "qwen2.5:7b"
-  model_verify: "qwen3:30b"
-  model_write: "qwen3:30b"
+  # Split models (tuned for AMD RX 7900 XTX 24GB VRAM)
+  model_extract: "qwen3:8b"          # Fast extraction, matches qwen2.5:14b quality
+  model_verify: "qwen3:30b"          # MoE 3B active params, strong reasoning
+  model_write: "gemma3:27b"          # Top-ranked creative writing at this size
 
-  temperature_extract: 0.1
+  temperature_extract: 0.0            # Tight for JSON reliability
   temperature_verify: 0.0
-  temperature_write: 0.3
+  temperature_write: 0.5              # More creative script output
 
 searx:
   base_url: "http://localhost:8080"
@@ -27,19 +27,19 @@ searx:
     - "substack.com"
 
 budgets:
-  max_claims: 15
-  max_sources_per_claim: 4
+  max_claims: 25
+  max_sources_per_claim: 5
   max_failures_per_domain: 6
-  max_fetches_per_run: 40
-  fetch_timeout_sec: 20
-  snippets_per_source: 3
-  snippet_max_chars: 800
+  max_fetches_per_run: 80
+  fetch_timeout_sec: 25
+  snippets_per_source: 4
+  snippet_max_chars: 1200
 
   # Second pass settings (only for high-severity UNCERTAIN)
   second_pass_enabled: true
-  second_pass_max_claims: 8
+  second_pass_max_claims: 12
   second_pass_extra_sources_per_claim: 5
-  second_pass_extra_fetches: 40
+  second_pass_extra_fetches: 60
 
 output:
   timezone: "America/Los_Angeles"
