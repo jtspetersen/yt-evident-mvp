@@ -6,8 +6,10 @@ import time
 import argparse
 import re
 import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from dotenv import load_dotenv
+from tqdm import tqdm
 
 from app.tools.logger import make_run_logger
 from app.store.run_index import append_run_index
@@ -524,24 +526,49 @@ def main():
         log.log("Stage 4: verify claims")
         s = stage_start(manifest, "verify_claims")
 
-        verdicts = []
-        per_claim_secs = []
-        for idx, c in enumerate(claims, start=1):
-            bundle = evidence_by_claim.get(c.claim_id, {})
-            t_claim = time.time()
+        verify_workers = int(cfg["budgets"].get("verify_workers", 3))
+
+        def _verify_task(claim):
+            """Run verify_one for a single claim. Executed in a worker thread."""
+            t0v = time.time()
             v = verify_one(
                 cfg["ollama"]["base_url"],
                 cfg["ollama"]["model_verify"],
-                c,
-                bundle,
+                claim,
+                evidence_by_claim.get(claim.claim_id, {}),
                 outdir,
                 temperature=cfg["ollama"].get("temperature_verify", 0.0),
                 transcript_json=transcript_json,
             )
+            return claim.claim_id, v, round(time.time() - t0v, 4)
+
+        # Submit all claims, collect results preserving original order
+        results_by_id = {}   # claim_id -> (verdict, sec)
+        verify_bar = tqdm(
+            total=len(claims),
+            desc="Verifying claims",
+            unit=" claim",
+            bar_format="{desc}: {n_fmt}/{total_fmt} claims | {elapsed}",
+            leave=False,
+        )
+
+        with ThreadPoolExecutor(max_workers=verify_workers) as executor:
+            futures = {executor.submit(_verify_task, c): c for c in claims}
+            for fut in as_completed(futures):
+                claim_id, v, sec = fut.result()
+                results_by_id[claim_id] = (v, sec)
+                verify_bar.update(1)
+                log.log(f"Verified {len(results_by_id)}/{len(claims)} claim_id={claim_id} rating={v.rating} conf={v.confidence} sec={sec}")
+
+        verify_bar.close()
+
+        # Rebuild lists in original claim order
+        verdicts = []
+        per_claim_secs = []
+        for c in claims:
+            v, sec = results_by_id[c.claim_id]
             verdicts.append(v)
-            sec = round(time.time() - t_claim, 4)
             per_claim_secs.append(sec)
-            log.log(f"Verified {idx}/{len(claims)} claim_id={c.claim_id} rating={v.rating} conf={v.confidence} sec={round(sec,2)}")
 
         stage_end(manifest, "verify_claims", s)
 
@@ -604,6 +631,8 @@ def main():
             transcript_json,
             verdicts,
             scorecard_md,
+            claims,
+            manifest["channel"]["raw"],
         )
         stage_end(manifest, "write_outline_and_script", s)
 

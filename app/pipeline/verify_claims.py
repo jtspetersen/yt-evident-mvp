@@ -488,7 +488,8 @@ def verify_one(ollama_base: str, model: str, claim, evidence_bundle, outdir: str
         ollama_base, model, SYSTEM, user,
         temperature=temperature,
         force_json=True,
-        timeout_sec=900
+        timeout_sec=900,
+        show_progress=True
     )
 
     os.makedirs(outdir, exist_ok=True)
@@ -503,7 +504,8 @@ def verify_one(ollama_base: str, model: str, claim, evidence_bundle, outdir: str
                 ollama_base, model, RETRY_SYSTEM, user,
                 temperature=0.0,
                 force_json=True,
-                timeout_sec=900
+                timeout_sec=900,
+                show_progress=True
             )
             with open(os.path.join(outdir, f"raw_verifier_{claim.claim_id}_retry.txt"), "w", encoding="utf-8") as f:
                 f.write(raw2)

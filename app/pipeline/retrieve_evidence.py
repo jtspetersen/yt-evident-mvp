@@ -1,8 +1,10 @@
 # app/pipeline/retrieve_evidence.py
 import hashlib
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from dateutil import tz
 from urllib.parse import urlparse
+from tqdm import tqdm
 
 from app.tools.searx import searx_search
 from app.tools.fetch import fetch_url
@@ -136,6 +138,22 @@ def is_probably_not_html(text: str) -> bool:
 # Main retrieval
 # ---------------------------
 
+def _fetch_and_parse(url, timeout_sec):
+    """Fetch a URL and extract text. Runs in a worker thread."""
+    html, status, err = fetch_url(url, timeout_sec=timeout_sec)
+    if html is None:
+        return {"ok": False, "url": url, "status": status, "error": err, "stage": "fetch"}
+
+    if is_probably_not_html(html):
+        return {"ok": False, "url": url, "status": status, "error": "content looks like xml/rss/sitemap", "stage": "parse"}
+
+    text = extract_text_from_html(html)
+    if not text or len(text) < 200:
+        return {"ok": False, "url": url, "status": status, "error": "extracted text empty/too short", "stage": "extract_text"}
+
+    return {"ok": True, "url": url, "status": status, "text": text}
+
+
 def retrieve_for_claims(
     searx_base: str,
     claims,
@@ -156,6 +174,7 @@ def retrieve_for_claims(
 
     max_fetches = int(budgets["max_fetches_per_run"]) + int(extra_fetch_budget)
     fetch_count = 0
+    fetch_timeout = int(budgets["fetch_timeout_sec"])
 
     deny_domains = [d.lower() for d in (deny_domains or [])]
     query_overrides = query_overrides or {}
@@ -165,123 +184,136 @@ def retrieve_for_claims(
     domain_blocked = set()    # hosts to skip during this run
     max_failures_per_domain = int(budgets.get("max_failures_per_domain", 6))
 
-    for c in claims:
-        query = query_overrides.get(c.claim_id) or c.claim_text
+    fetch_workers = int(budgets.get("fetch_workers", 8))
 
-        results = searx_search(
-            searx_base,
-            query,
-            num_results=int(budgets["max_sources_per_claim"]),
-            deny_domains=deny_domains
-        )
+    claim_bar = tqdm(
+        claims,
+        desc="Retrieving evidence",
+        unit=" claim",
+        bar_format="{desc}: {n_fmt}/{total_fmt} claims | {elapsed} | {postfix}",
+        leave=False,
+    )
+    claim_bar.set_postfix_str("src=0 snip=0 fail=0")
 
-        claim_snips = []
+    with ThreadPoolExecutor(max_workers=fetch_workers) as executor:
+        for c in claim_bar:
+            query = query_overrides.get(c.claim_id) or c.claim_text
 
-        for r in results:
-            if fetch_count >= max_fetches:
-                break
+            results = searx_search(
+                searx_base,
+                query,
+                num_results=int(budgets["max_sources_per_claim"]),
+                deny_domains=deny_domains
+            )
 
-            url = r.get("url")
-            if not url:
-                continue
+            # --- Filter candidates and submit parallel fetches ---
+            candidates = []  # (url, title, host_str)
+            for r in results:
+                if fetch_count + len(candidates) >= max_fetches:
+                    break
 
-            h = host(url)
-            if not h:
-                continue
+                url = r.get("url")
+                if not url:
+                    continue
 
-            # per-run domain block (repeated 403/429 etc.)
-            if h in domain_blocked:
-                continue
+                h = host(url)
+                if not h:
+                    continue
+                if h in domain_blocked:
+                    continue
+                if any(d in h for d in deny_domains):
+                    continue
+                if looks_like_binary(url) or looks_like_junk_url(url):
+                    continue
 
-            # extra denylist safety (in case searx filtering misses variants)
-            if any(d in h for d in deny_domains):
-                continue
+                candidates.append((url, r.get("title"), h))
 
-            # skip non-useful urls early
-            if looks_like_binary(url) or looks_like_junk_url(url):
-                continue
-
-            html, status, err = fetch_url(url, timeout_sec=int(budgets["fetch_timeout_sec"]))
-            fetch_count += 1
-
-            if html is None:
-                # track domain failures and possibly block
-                domain_fail_counts[h] = domain_fail_counts.get(h, 0) + 1
-                if domain_fail_counts[h] >= max_failures_per_domain:
-                    domain_blocked.add(h)
-
-                fetch_failures.append({
-                    "stage": "fetch",
-                    "url": url,
-                    "host": h,
-                    "status": status,
-                    "error": err,
+            if not candidates:
+                evidence_by_claim[c.claim_id] = {
                     "claim_id": c.claim_id,
-                    "query": query
-                })
+                    "query": query,
+                    "snippets": []
+                }
                 continue
 
-            if is_probably_not_html(html):
-                fetch_failures.append({
-                    "stage": "parse",
-                    "url": url,
-                    "host": h,
-                    "status": status,
-                    "error": "content looks like xml/rss/sitemap",
-                    "claim_id": c.claim_id,
-                    "query": query
-                })
-                continue
+            claim_bar.set_description(f"Fetching {len(candidates)} URLs")
 
-            text = extract_text_from_html(html)
-            if not text or len(text) < 200:
-                fetch_failures.append({
-                    "stage": "extract_text",
-                    "url": url,
-                    "host": h,
-                    "status": status,
-                    "error": "extracted text empty/too short",
-                    "claim_id": c.claim_id,
-                    "query": query
-                })
-                continue
+            # Submit all fetches for this claim concurrently
+            future_to_info = {}
+            for url, title, h in candidates:
+                fut = executor.submit(_fetch_and_parse, url, fetch_timeout)
+                future_to_info[fut] = (url, title, h)
 
-            src_id = f"SRC{len(all_sources)+1:04d}"
-            tier = source_tier_guess(url)
+            # Process results as they complete
+            claim_snips = []
+            for fut in as_completed(future_to_info):
+                url, title, h = future_to_info[fut]
+                fetch_count += 1
 
-            src = {
-                "source_id": src_id,
-                "url": url,
-                "title": r.get("title"),
-                "publisher": h,
-                "retrieved_at": retrieved_at,
-                "tier": tier,
-                "content_hash": sha256(text),
-                "content_text": text[:20000],
-            }
-            all_sources.append(src)
+                try:
+                    result = fut.result()
+                except Exception as e:
+                    result = {"ok": False, "url": url, "status": None, "error": str(e), "stage": "fetch"}
 
-            snippets = make_snippets(text, max_chars=max(600, int(snippet_max_chars)), overlap=200)
-            top = top_k_snippets(c.claim_text, snippets, k=int(snippets_per_source))
+                if not result["ok"]:
+                    domain_fail_counts[h] = domain_fail_counts.get(h, 0) + 1
+                    if domain_fail_counts[h] >= max_failures_per_domain:
+                        domain_blocked.add(h)
 
-            for (score, start, end, chunk) in top:
-                snip_id = f"SNIP{len(all_snippets)+1:05d}"
-                sn = {
-                    "snippet_id": snip_id,
+                    fetch_failures.append({
+                        "stage": result.get("stage", "fetch"),
+                        "url": url,
+                        "host": h,
+                        "status": result.get("status"),
+                        "error": result.get("error"),
+                        "claim_id": c.claim_id,
+                        "query": query
+                    })
+                    claim_bar.set_postfix_str(f"src={len(all_sources)} snip={len(all_snippets)} fail={len(fetch_failures)}")
+                    continue
+
+                text = result["text"]
+                src_id = f"SRC{len(all_sources)+1:04d}"
+                tier = source_tier_guess(url)
+
+                src = {
                     "source_id": src_id,
                     "url": url,
+                    "title": title,
+                    "publisher": h,
+                    "retrieved_at": retrieved_at,
                     "tier": tier,
-                    "relevance_score": round(score, 3),
-                    "location": {"type": "text_range", "start_char": start, "end_char": end},
-                    "excerpt": (chunk or "")[:int(snippet_max_chars)],
+                    "content_hash": sha256(text),
+                    "content_text": text[:20000],
                 }
-                all_snippets.append(sn)
-                claim_snips.append(sn)
+                all_sources.append(src)
 
-        evidence_by_claim[c.claim_id] = {
-            "claim_id": c.claim_id,
-            "query": query,
-            "snippets": claim_snips
-        }
+                snippets = make_snippets(text, max_chars=max(600, int(snippet_max_chars)), overlap=200)
+                top = top_k_snippets(c.claim_text, snippets, k=int(snippets_per_source))
+
+                for (score, start, end, chunk) in top:
+                    snip_id = f"SNIP{len(all_snippets)+1:05d}"
+                    sn = {
+                        "snippet_id": snip_id,
+                        "source_id": src_id,
+                        "url": url,
+                        "tier": tier,
+                        "relevance_score": round(score, 3),
+                        "location": {"type": "text_range", "start_char": start, "end_char": end},
+                        "excerpt": (chunk or "")[:int(snippet_max_chars)],
+                    }
+                    all_snippets.append(sn)
+                    claim_snips.append(sn)
+
+                claim_bar.set_postfix_str(f"src={len(all_sources)} snip={len(all_snippets)} fail={len(fetch_failures)}")
+
+            evidence_by_claim[c.claim_id] = {
+                "claim_id": c.claim_id,
+                "query": query,
+                "snippets": claim_snips
+            }
+            claim_bar.set_description("Retrieving evidence")
+
+    claim_bar.close()
 
     return all_sources, all_snippets, evidence_by_claim, fetch_failures
