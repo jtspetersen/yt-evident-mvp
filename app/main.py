@@ -6,7 +6,7 @@ import time
 import argparse
 import re
 import traceback
-from datetime import datetime
+from datetime import datetime, timezone
 
 from app.tools.logger import make_run_logger
 from app.store.run_index import append_run_index
@@ -25,6 +25,13 @@ from app.pipeline.write_outputs import write_text, write_outline_and_script
 # ----------------------------
 # Utilities
 # ----------------------------
+
+def should_log(level: str) -> bool:
+    """Check if we should log at the given level based on EVIDENT_LOG_LEVEL env var."""
+    levels = {"DEBUG": 0, "INFO": 1, "WARNING": 2, "ERROR": 3}
+    current_level = os.environ.get("EVIDENT_LOG_LEVEL", "INFO")
+    return levels.get(level, 1) >= levels.get(current_level, 1)
+
 
 def load_config():
     with open("config.yaml", "r", encoding="utf-8") as f:
@@ -104,7 +111,7 @@ def extract_topics_lightweight(text: str, max_topics: int = 8) -> list:
 
 
 def utc_now_iso() -> str:
-    return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def write_run_manifest(outdir: str, manifest: dict) -> None:
@@ -221,7 +228,19 @@ def main():
                         help="Channel/creator name for this run. If omitted, inferred from filename 'Channel - Title.txt'.")
     parser.add_argument("--review", action="store_true",
                         help="Interactive review: keep/drop/edit claims before retrieval+verification.")
+    parser.add_argument("--quiet", action="store_true",
+                        help="Suppress DEBUG/INFO output (show only warnings and errors).")
+    parser.add_argument("--verbose", action="store_true",
+                        help="Show all DEBUG output (overrides --quiet).")
     args = parser.parse_args()
+
+    # Set logging level based on CLI flags
+    if args.verbose:
+        os.environ["EVIDENT_LOG_LEVEL"] = "DEBUG"
+    elif args.quiet:
+        os.environ["EVIDENT_LOG_LEVEL"] = "WARNING"
+    else:
+        os.environ["EVIDENT_LOG_LEVEL"] = "INFO"
 
     cfg = load_config()
     infile = pick_infile(args.infile)
@@ -461,6 +480,7 @@ def main():
                 bundle,
                 outdir,
                 temperature=cfg["ollama"].get("temperature_verify", 0.0),
+                transcript_json=transcript_json,
             )
             verdicts.append(v)
             sec = round(time.time() - t_claim, 4)

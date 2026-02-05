@@ -1,55 +1,327 @@
 # app/pipeline/extract_claims.py
 import json
+import os
 from typing import List
 from app.tools.ollama_client import ollama_chat
 from app.tools.json_extract import extract_json
 from app.policy import FACT_CHECKING_STANDARDS
 from app.schemas.claim import Claim
 
-SYSTEM = f"""
-You are the Claim Extractor for a fact-checking workflow.
-Extract only CHECKABLE factual claims from the transcript.
-Do NOT include opinions, predictions, vague rhetoric, or value judgments.
 
-Return ONLY valid JSON: a list of objects matching this schema:
-{{
-  "claim_id": "C001",
-  "segment_id": "S001",
-  "timestamp": null,
-  "claim_text": "...",
-  "quote_from_transcript": "...",
-  "claim_type": "statistic|event_date|quote_attribution|causal|medical_science|policy_legal|study_says|biography|other",
-  "entities": ["..."],
-  "check_priority": "high|medium|low",
-  "needs_context": ["..."]
-}}
+def _should_log(level: str) -> bool:
+    """Check if we should log at the given level."""
+    levels = {"DEBUG": 0, "INFO": 1, "WARNING": 2, "ERROR": 3}
+    current_level = os.environ.get("EVIDENT_LOG_LEVEL", "INFO")
+    return levels.get(level, 1) >= levels.get(current_level, 1)
 
-Rules:
-- Max 50 claims.
-- If ambiguous, include needs_context questions.
-- Keep quote_from_transcript short and exact.
-- claim_text should be a clean paraphrase in plain English.
+SYSTEM = f"""You are a claim extraction system. Extract ALL checkable factual claims from the provided transcript.
+
+DO NOT extract: opinions, predictions, rhetoric, value judgments
+DO extract: statistics, dates, attributions, causal claims, scientific claims, policy claims
+
+CRITICAL EXTRACTION RULES:
+1. Extract EVERY checkable claim - do not skip any
+2. Make claims COMPLETE and SELF-CONTAINED - include what numbers refer to
+3. Use surrounding context to clarify vague claims
+4. COMBINE claims that form a single logical argument in the same sentence/context
+
+When to COMBINE claims into ONE:
+- Causal relationships: "Without X, then Y" or "X causes Y"
+- Conditional statements: "If X then Y"
+- Dependent claims: second claim needs first for context
+→ Extract as ONE compound claim capturing the full argument
+
+When to keep claims SEPARATE:
+- Independent facts stated separately
+- Claims that can be verified independently
+→ Extract as separate claims
+
+BAD extraction (splitting related claims):
+- Claim 1: "There are 90 million illegal migrants"
+- Claim 2: "Progressive left gets 30% of vote without them"
+→ These form ONE causal argument! Should be combined.
+
+GOOD extraction (combined):
+- "The progressive left gets 30% of the vote due to 90 million illegal migrants in the country"
+→ Single claim capturing full causal argument (claim_type: causal)
+
+Other examples:
+BAD: "He'll bring in 200 million" → INCOMPLETE (what?)
+GOOD: "Gavin Newsom will bring in 200 million immigrants" → COMPLETE
+
+BAD: "Crime is up 50%" → INCOMPLETE (where? when?)
+GOOD: "Crime is up 50% in Los Angeles in 2024" → COMPLETE
+
+If a claim uses a number or percentage without context, look at surrounding text to complete it.
+Extract the COMPLETE version, not fragments.
+
+Output ONLY a JSON array of claim OBJECTS (not strings). No other text.
+
+CRITICAL: Each array element must be an OBJECT with these fields:
+- claim_id (string)
+- segment_id (string)
+- timestamp (null or string)
+- claim_text (string) - MUST be complete and self-contained
+- quote_from_transcript (string)
+- claim_type (string: statistic|event_date|quote_attribution|causal|medical_science|policy_legal|study_says|biography|other)
+- entities (array of strings)
+- check_priority (string: high|medium|low)
+- needs_context (array of strings)
+
+Example - extract ALL claims in this format:
+[
+  {{"claim_id": "C001", "segment_id": "S001", "timestamp": null, "claim_text": "specific complete factual claim", "quote_from_transcript": "exact quote", "claim_type": "statistic", "entities": [], "check_priority": "high", "needs_context": []}},
+  {{"claim_id": "C002", "segment_id": "S002", "timestamp": null, "claim_text": "another complete factual claim", "quote_from_transcript": "exact quote", "claim_type": "event_date", "entities": [], "check_priority": "medium", "needs_context": []}}
+]
+
 {FACT_CHECKING_STANDARDS}
-"""
 
-def extract_claims(ollama_base: str, model: str, transcript_json: dict, max_claims: int = 50, temperature: float = 0.1) -> List[Claim]:
-    user = json.dumps(transcript_json, ensure_ascii=False)
-    raw = ollama_chat(ollama_base, model, SYSTEM, user, temperature=temperature)
+IMPORTANT: Return array of OBJECTS, not strings. Each element must have all required fields.
+Extract EVERY claim. Make each claim COMPLETE."""
+
+def _extract_from_chunk(ollama_base: str, model: str, chunk_json: dict, temperature: float, max_retries: int = 2) -> list:
+    """Extract claims from a single chunk of segments."""
+    import sys
+    import time
+    user_prompt = json.dumps(chunk_json, ensure_ascii=False)
+    user_with_instruction = f"{user_prompt}\n\nIMPORTANT: Return a JSON array with ALL checkable factual claims from these segments. Make each claim COMPLETE and SELF-CONTAINED - if a claim mentions a number or percentage, include what it refers to by using surrounding context. COMBINE claims that form a single causal or conditional argument (like 'Without X then Y') into ONE compound claim."
+
+    if _should_log("DEBUG"):
+        print(f"DEBUG: Processing chunk with {len(chunk_json.get('segments', []))} segments", file=sys.stderr)
+
+    # Retry logic for empty responses
+    for attempt in range(max_retries + 1):
+        raw = ollama_chat(ollama_base, model, SYSTEM, user_with_instruction, temperature=temperature, force_json=False, num_predict=8192, show_progress=True)
+
+        # If we got content, break out of retry loop
+        if raw and raw.strip():
+            break
+
+        # Empty response - retry if we have attempts left
+        if attempt < max_retries:
+            if _should_log("INFO"):
+                print(f"INFO: Empty response on attempt {attempt + 1}, retrying after 3s...", file=sys.stderr)
+            time.sleep(3)
+        else:
+            if _should_log("DEBUG"):
+                print(f"DEBUG: All retry attempts exhausted, chunk returned empty", file=sys.stderr)
+            return []
+
+    try:
+        data = extract_json(raw)
+        if not isinstance(data, list):
+            if isinstance(data, dict) and any(k in data for k in ["claims", "data", "results", "items"]):
+                for key in ["claims", "data", "results", "items"]:
+                    if key in data and isinstance(data[key], list):
+                        data = data[key]
+                        break
+            elif isinstance(data, dict) and {"claim_id", "claim_text", "claim_type"}.issubset(data.keys()):
+                data = [data]
+            else:
+                return []
+
+        # Convert string arrays to objects
+        if data and isinstance(data[0], str):
+            converted = []
+            for i, claim_text in enumerate(data, start=1):
+                converted.append({
+                    "claim_id": f"C{i:03d}",
+                    "segment_id": chunk_json["segments"][0]["id"] if chunk_json.get("segments") else "S001",
+                    "timestamp": None,
+                    "claim_text": claim_text,
+                    "quote_from_transcript": claim_text[:200],
+                    "claim_type": "other",
+                    "entities": [],
+                    "check_priority": "medium",
+                    "needs_context": []
+                })
+            data = converted
+
+        return data if isinstance(data, list) else []
+    except Exception as e:
+        if _should_log("DEBUG"):
+            print(f"DEBUG: Chunk extraction failed: {e}", file=sys.stderr)
+        return []
+
+
+def _deduplicate_claims(claims_data: list) -> list:
+    """
+    Remove duplicate claims that appeared in multiple overlapping chunks.
+    Uses text similarity to identify duplicates.
+    """
+    import difflib
+    import sys
+
+    if not claims_data:
+        return claims_data
+
+    unique_claims = []
+    seen_texts = []
+
+    for claim in claims_data:
+        claim_text = claim.get("claim_text", "").lower().strip()
+        if not claim_text:
+            continue
+
+        # Check if this claim is too similar to any already seen claim
+        is_duplicate = False
+        for seen_text in seen_texts:
+            similarity = difflib.SequenceMatcher(None, claim_text, seen_text).ratio()
+            if similarity > 0.85:  # 85% similarity threshold
+                is_duplicate = True
+                if _should_log("DEBUG"):
+                    print(f"DEBUG: Skipping duplicate claim (similarity={similarity:.2f}): {claim_text[:60]}...", file=sys.stderr)
+                break
+
+        if not is_duplicate:
+            unique_claims.append(claim)
+            seen_texts.append(claim_text)
+
+    return unique_claims
+
+def extract_claims(ollama_base: str, model: str, transcript_json: dict, max_claims: int = 50, temperature: float = 0.1, chunk_size: int = 20, chunk_overlap: int = 5) -> List[Claim]:
+    import sys
+    import os
+
+    segments = transcript_json.get("segments", [])
+
+    # If transcript is small, process as single chunk
+    if len(segments) <= chunk_size:
+        # Original single-pass logic
+        user_prompt = json.dumps(transcript_json, ensure_ascii=False)
+        user_with_instruction = f"{user_prompt}\n\nIMPORTANT: Return a JSON array with MULTIPLE claims (not just one). Review ALL segments and extract EVERY checkable factual claim. Make each claim COMPLETE and SELF-CONTAINED - if a claim mentions a number or percentage, include what it refers to by using surrounding context. COMBINE claims that form a single causal or conditional argument (like 'Without X then Y') into ONE compound claim."
+
+        if _should_log("DEBUG"):
+            print(f"DEBUG: Sending {len(user_prompt)} chars, {len(segments)} segments to {model}", file=sys.stderr)
+
+        raw = ollama_chat(ollama_base, model, SYSTEM, user_with_instruction, temperature=temperature, force_json=False, num_predict=8192, show_progress=True)
+    else:
+        # Chunk-based extraction for larger transcripts with overlapping chunks
+        if _should_log("INFO"):
+            print(f"INFO: Processing {len(segments)} segments in chunks of {chunk_size} with {chunk_overlap} segment overlap", file=sys.stderr)
+
+        all_claims_data = []
+        chunk_step = chunk_size - chunk_overlap  # How far to advance for each chunk
+        num_chunks = (len(segments) - chunk_overlap + chunk_step - 1) // chunk_step
+
+        for i in range(num_chunks):
+            # Calculate start with overlap from previous chunk
+            start_idx = i * chunk_step
+            end_idx = min(start_idx + chunk_size, len(segments))
+
+            # Skip if we've already processed all segments
+            if start_idx >= len(segments):
+                break
+
+            chunk_segments = segments[start_idx:end_idx]
+
+            chunk_json = {
+                "video": transcript_json.get("video", {}),
+                "segments": chunk_segments
+            }
+
+            chunk_claims = _extract_from_chunk(ollama_base, model, chunk_json, temperature)
+            all_claims_data.extend(chunk_claims)
+
+            if _should_log("INFO"):
+                print(f"INFO: Chunk {i+1}/{num_chunks} (segments {start_idx}-{end_idx-1}): extracted {len(chunk_claims)} claims", file=sys.stderr)
+
+        # Deduplicate claims from overlapping chunks
+        if _should_log("INFO"):
+            print(f"INFO: Deduplicating {len(all_claims_data)} claims from overlapping chunks", file=sys.stderr)
+
+        all_claims_data = _deduplicate_claims(all_claims_data)
+
+        if _should_log("INFO"):
+            print(f"INFO: After deduplication: {len(all_claims_data)} unique claims", file=sys.stderr)
+
+        # Renumber all claims sequentially to avoid duplicates from different chunks
+        for i, claim_data in enumerate(all_claims_data, start=1):
+            claim_data["claim_id"] = f"C{i:03d}"
+
+        if _should_log("INFO"):
+            print(f"INFO: Renumbered {len(all_claims_data)} claims with unique IDs", file=sys.stderr)
+
+        # Create a fake "raw" response for the rest of the logic
+        raw = json.dumps(all_claims_data)
+
+    # Debug: save raw output
+    debug_dir = "cache/debug"
+    os.makedirs(debug_dir, exist_ok=True)
+    with open(os.path.join(debug_dir, "extract_claims_raw.json"), "w", encoding="utf-8") as f:
+        f.write(raw)
+    if _should_log("DEBUG"):
+        print(f"DEBUG: Model returned {len(raw)} chars", file=sys.stderr)
 
     try:
         data = extract_json(raw)
     except Exception as e:
-        import sys
         print(f"WARNING: Claim extraction JSON parse failed ({type(e).__name__}: {e}). Returning 0 claims.", file=sys.stderr)
         return []
 
     if not isinstance(data, list):
-        import sys
-        print(f"WARNING: Claim extraction returned {type(data).__name__} instead of list. Returning 0 claims.", file=sys.stderr)
-        return []
+        print(f"WARNING: Claim extraction returned {type(data).__name__} instead of list.", file=sys.stderr)
+        if isinstance(data, dict):
+            if _should_log("DEBUG"):
+                print(f"DEBUG: Dict keys = {list(data.keys())}", file=sys.stderr)
+            # Try to extract array from common wrapper keys
+            for key in ["claims", "data", "results", "items"]:
+                if key in data and isinstance(data[key], list):
+                    if _should_log("DEBUG"):
+                        print(f"DEBUG: Found array in data['{key}'], using that instead", file=sys.stderr)
+                    data = data[key]
+                    break
+            else:
+                # Check if it looks like a single claim object
+                expected_keys = {"claim_id", "claim_text", "claim_type"}
+                if expected_keys.issubset(data.keys()):
+                    if _should_log("DEBUG"):
+                        print(f"DEBUG: Looks like a single claim object, wrapping in array", file=sys.stderr)
+                    data = [data]
+                else:
+                    return []
+        else:
+            return []
+
+    # Check if array contains strings instead of objects - convert them
+    if data and isinstance(data[0], str):
+        if _should_log("INFO"):
+            print(f"INFO: Model returned {len(data)} string claims. Converting to objects...", file=sys.stderr)
+        converted = []
+        for i, claim_text in enumerate(data[:max_claims], start=1):
+            # Create a minimal claim object from the string
+            converted.append({
+                "claim_id": f"C{i:03d}",
+                "segment_id": "S001",  # Default segment
+                "timestamp": None,
+                "claim_text": claim_text,
+                "quote_from_transcript": claim_text[:200],  # Use first 200 chars as quote
+                "claim_type": "other",
+                "entities": [],
+                "check_priority": "medium",
+                "needs_context": []
+            })
+        data = converted
+        if _should_log("INFO"):
+            print(f"INFO: Converted {len(data)} string claims to objects", file=sys.stderr)
 
     claims = []
+    valid_claim_types = {"statistic", "event_date", "quote_attribution", "causal", "medical_science", "policy_legal", "study_says", "biography", "other"}
     for i, item in enumerate(data[:max_claims], start=1):
+        if not isinstance(item, dict):
+            print(f"WARNING: Item {i} is {type(item).__name__}, not dict. Skipping.", file=sys.stderr)
+            continue
         item["claim_id"] = item.get("claim_id") or f"C{i:03d}"
-        claims.append(Claim(**item))
+
+        # Normalize invalid claim_type to 'other'
+        if item.get("claim_type") not in valid_claim_types:
+            if _should_log("INFO"):
+                print(f"INFO: Invalid claim_type '{item.get('claim_type')}' in claim {i}, using 'other'", file=sys.stderr)
+            item["claim_type"] = "other"
+
+        try:
+            claims.append(Claim(**item))
+        except Exception as e:
+            print(f"WARNING: Failed to create Claim from item {i}: {e}", file=sys.stderr)
+            continue
     return claims

@@ -2,11 +2,11 @@ ollama:
   base_url: "http://localhost:11434"
 
   # Split models (tuned for AMD RX 7900 XTX 24GB VRAM)
-  model_extract: "qwen3:8b"          # Fast extraction, matches qwen2.5:14b quality
+  model_extract: "qwen3:8b"          # Lighter model for chunk-based extraction
   model_verify: "qwen3:30b"          # MoE 3B active params, strong reasoning
   model_write: "gemma3:27b"          # Top-ranked creative writing at this size
 
-  temperature_extract: 0.0            # Tight for JSON reliability
+  temperature_extract: 0.1            # Low for JSON reliability, but not zero
   temperature_verify: 0.0
   temperature_write: 0.5              # More creative script output
 
@@ -25,6 +25,13 @@ searx:
     - "instagram.com"
     - "medium.com"
     - "substack.com"
+    - "reddit.com"
+    - "quora.com"
+    - "yahoo.com"          # Yahoo Answers, Yahoo News comments
+    - "tumblr.com"
+    - "blogger.com"
+    - "blogspot.com"
+    - "wordpress.com"      # Free WordPress blogs (not self-hosted .org sites)
 
 budgets:
   max_claims: 25

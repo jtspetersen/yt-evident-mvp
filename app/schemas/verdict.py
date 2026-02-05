@@ -23,3 +23,4 @@ class Verdict(BaseModel):
     red_flags: List[str] = Field(default_factory=list)
     citations: List[Citation] = Field(default_factory=list)
     missing_info: List[str] = Field(default_factory=list)
+    rhetorical_issues: List[str] = Field(default_factory=list)

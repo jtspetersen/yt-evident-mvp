@@ -11,24 +11,115 @@ No prose. No markdown. No code fences.
 
 Return exactly ONE JSON object with these keys:
 claim_id, rating, confidence, explanation, corrected_claim, severity,
-source_tiers_used, red_flags, citations, missing_info
+source_tiers_used, red_flags, citations, missing_info, rhetorical_issues
 
 rating MUST be exactly one of:
 VERIFIED, LIKELY TRUE, UNCERTAIN, LIKELY FALSE, FALSE
 
-citations MUST be a list of objects with keys:
-source_id, snippet_id, tier, url, quote
+CRITICAL - Array fields must be arrays, NOT strings:
+- source_tiers_used: [6] or [2, 3] (array of integers)
+- red_flags: ["cherry_picked", "outdated"] (array of strings)
+- missing_info: ["Need primary source", "Missing date"] (array of strings)
+- rhetorical_issues: ["false_causation"] (array of strings)
+- citations: array of objects with keys: source_id, snippet_id, tier, url, quote
+
+Example response format:
+{
+  "claim_id": "C001",
+  "rating": "UNCERTAIN",
+  "confidence": 0.4,
+  "explanation": "Evidence is insufficient to verify this claim.",
+  "corrected_claim": null,
+  "severity": "medium",
+  "source_tiers_used": [6],
+  "red_flags": ["insufficient_evidence"],
+  "citations": [],
+  "missing_info": ["Need primary source from official data"],
+  "rhetorical_issues": []
+}
+
+CRITICAL CITATION RULES:
+1. If you use ANY evidence snippet in your reasoning, you MUST cite it in citations array
+2. When rating FALSE/LIKELY FALSE/VERIFIED/LIKELY TRUE, you MUST include citations
+3. Extract snippet_id, source_id, tier, url from the evidence_snippets provided
+4. Include a relevant quote (excerpt from the snippet) in each citation
+5. Do not invent source_id or snippet_id; use only those provided in evidence_snippets
+6. Only use UNCERTAIN with empty citations if evidence snippets are genuinely irrelevant
+
+Example with citations:
+{
+  "claim_id": "C003",
+  "rating": "FALSE",
+  "confidence": 0.9,
+  "explanation": "Evidence shows this claim is false...",
+  "citations": [
+    {
+      "source_id": "SRC0007",
+      "snippet_id": "SNIP00027",
+      "tier": 6,
+      "url": "https://example.com/article",
+      "quote": "Relevant excerpt from the source that contradicts the claim..."
+    }
+  ]
+}
+
+Rhetorical manipulation detection:
+- Check if claim is used to support false causation
+- Detect cherry-picked statistics (missing contrary data)
+- Identify correlation presented as causation
+- Flag misleading framing even if individual fact is true
+- Note if surrounding context changes meaning
+
+If claim is TRUE but used misleadingly:
+- rating: can be VERIFIED but add rhetorical_issues
+- rhetorical_issues: ["false_causation", "cherry_picked"] (array format)
+- explanation: note both truth of claim AND misuse
+
+Examples of rhetorical issues to detect:
+- "false_causation": true fact used to imply false cause
+- "cherry_picked": selective data omitting contradictory evidence
+- "missing_context": true but misleading without full picture
+- "correlation_as_causation": confusing correlation with cause
+- "appeal_to_fear": using fear to bypass critical thinking
+- "false_dichotomy": presenting false either/or choice
 
 Rules:
-- Use ONLY the evidence snippets provided.
-- If citations is empty OR missing, rating MUST be UNCERTAIN and confidence <= 0.4.
-- Do not invent source_id or snippet_id; use only those provided in evidence_snippets.
+- Use ONLY the evidence snippets provided
+- Check transcript_context to see how claim is being used rhetorically
+- Be confident in FALSE ratings when evidence clearly contradicts the claim
+- For obviously false claims (e.g., "90 million" when data shows ~11 million), use FALSE not UNCERTAIN
+- If no relevant evidence found, use UNCERTAIN
+- ALWAYS cite evidence snippets that inform your rating (use citations array)
 """
 
 RETRY_SYSTEM = """
-Return ONLY valid JSON following the required schema and keys.
+Return ONLY valid JSON following the EXACT schema below.
 Your response must be a single JSON object and must start with '{' and end with '}'.
-No other text.
+No other text. No prose. No markdown. No code fences.
+
+Return exactly ONE JSON object with these EXACT keys (do not change key names):
+claim_id, rating, confidence, explanation, corrected_claim, severity,
+source_tiers_used, red_flags, citations, missing_info, rhetorical_issues
+
+Required field types:
+- claim_id: string
+- rating: MUST be exactly one of: VERIFIED, LIKELY TRUE, UNCERTAIN, LIKELY FALSE, FALSE
+- confidence: number between 0 and 1
+- explanation: string (required, must not be empty)
+- corrected_claim: string or null
+- severity: MUST be exactly one of: high, medium, low
+- source_tiers_used: array of integers
+- red_flags: array of strings
+- citations: array of objects with keys: source_id, snippet_id, tier, url, quote
+- missing_info: array of strings
+- rhetorical_issues: array of strings
+
+CRITICAL: Use these EXACT key names. Do NOT use alternatives like:
+- "verification_result" (use "rating")
+- "verification_reason" (use "explanation")
+- Any other variations
+
+If citations is empty, rating MUST be UNCERTAIN and confidence <= 0.4.
 """
 
 def _compact_snippets(snips, max_snips: int = 6, max_chars: int = 500):
@@ -142,6 +233,7 @@ def _normalize(data: dict, claim_id: str, sent_snippets: list) -> dict:
     data["source_tiers_used"] = _coerce_int_list(data.get("source_tiers_used"))
     data["red_flags"] = _coerce_list(data.get("red_flags"))
     data["missing_info"] = _coerce_list(data.get("missing_info"))
+    data["rhetorical_issues"] = _coerce_list(data.get("rhetorical_issues"))
 
     # citations default then coercion
     data.setdefault("citations", [])
@@ -208,11 +300,22 @@ def _normalize(data: dict, claim_id: str, sent_snippets: list) -> dict:
     data["citations"] = fixed_citations
 
     # Enforce evidence gate (baseline): no citations => UNCERTAIN low confidence
+    # EXCEPTION: Allow FALSE/LIKELY FALSE ratings when evidence clearly contradicts claim
     if not data.get("citations"):
-        data["rating"] = "UNCERTAIN"
-        data["confidence"] = min(data["confidence"], 0.4)
-        if not data["missing_info"]:
-            data["missing_info"] = ["Need at least one reputable source snippet relevant to the claim."]
+        current_rating = data.get("rating", "UNCERTAIN")
+        # Allow negative ratings (FALSE, LIKELY FALSE) to stand even without citations
+        # if the model determined the claim is contradicted by evidence
+        if current_rating not in ["FALSE", "LIKELY FALSE"]:
+            data["rating"] = "UNCERTAIN"
+            data["confidence"] = min(data["confidence"], 0.4)
+            if not data["missing_info"]:
+                data["missing_info"] = ["Need at least one reputable source snippet relevant to the claim."]
+        else:
+            # Keep FALSE/LIKELY FALSE but lower confidence slightly
+            data["confidence"] = min(data["confidence"], 0.75)
+            # Note: evidence was found but not properly cited
+            if "Evidence found but citations incomplete" not in data.get("red_flags", []):
+                data["red_flags"].append("evidence_found_citations_incomplete")
 
     return data
 
@@ -236,9 +339,15 @@ def _norm_claim_type(claim_type: str) -> str:
 def _apply_archetype_gate(data: dict, claim_type: str) -> dict:
     """
     Hard rules that enforce evidence quality based on claim archetype.
-    This is conservative: failing the gate downgrades to UNCERTAIN.
+    ASYMMETRIC: Strict tier requirements for positive ratings (VERIFIED, LIKELY TRUE),
+    relaxed for negative ratings (FALSE, LIKELY FALSE) since any reliable evidence can disprove.
     """
     ct = _norm_claim_type(claim_type)
+    current_rating = data.get("rating", "UNCERTAIN")
+
+    # Only apply strict tier gates to positive ratings
+    # Negative ratings (FALSE, LIKELY FALSE) can use any tier if evidence clearly contradicts
+    is_positive_rating = current_rating in ["VERIFIED", "LIKELY TRUE"]
 
     cits = data.get("citations") or []
     tiers = []
@@ -259,36 +368,43 @@ def _apply_archetype_gate(data: dict, claim_type: str) -> dict:
     missing = []
 
     # Tier meaning in your system:
-    # 2 = .edu, 3 = gov/WHO/OECD/WB, 6 = everything else
+    # 1 = scholarly journals, 2 = .edu, 3 = gov/WHO/OECD/WB, 4 = research orgs, 5 = news, 6 = everything else
     if ct == "medical":
-        # Require at least one strong source (tier <= 3)
+        # Require at least one citation for all ratings
         if not at_least_n_citations(1):
             gate_failed = True
             missing.append("Medical/health claims require at least one citation.")
-        elif not has_tier_at_most(3):
+        # Only require tier <= 3 for positive ratings
+        elif is_positive_rating and not has_tier_at_most(3):
             gate_failed = True
-            missing.append("Medical/health claims require a higher-quality source (tier 2–3 such as .edu, .gov, WHO, OECD, World Bank).")
+            missing.append("Medical/health claims require a higher-quality source (tier 1–3 such as journals, .edu, .gov, WHO) for verification.")
 
     elif ct == "statistical":
-        # Require at least one non-junk citation; in your current tiers that basically means <=3
+        # Require at least one citation for all ratings
         if not at_least_n_citations(1):
             gate_failed = True
             missing.append("Statistical claims require at least one citation.")
-        elif not has_tier_at_most(3):
+        # Only require tier <= 3 for positive ratings
+        elif is_positive_rating and not has_tier_at_most(3):
             gate_failed = True
-            missing.append("Statistical claims require an authoritative source (tier 2–3), not general blogs.")
+            missing.append("Statistical claims require an authoritative source (tier 1–3) for verification, not general websites.")
 
     elif ct == "causal":
-        # Stronger: need 2 citations, and at least one strong
-        if not at_least_n_citations(2):
+        # Require at least 2 citations for positive ratings, 1 for negative
+        min_citations = 2 if is_positive_rating else 1
+        if not at_least_n_citations(min_citations):
             gate_failed = True
-            missing.append("Causal claims require at least two independent citations.")
-        if cits and not has_tier_at_most(3):
+            if is_positive_rating:
+                missing.append("Causal claims require at least two independent citations for verification.")
+            else:
+                missing.append("Causal claims require at least one citation to disprove.")
+        # Only require tier <= 3 for positive ratings
+        if cits and is_positive_rating and not has_tier_at_most(3):
             gate_failed = True
-            missing.append("Causal claims require at least one higher-quality source (tier 2–3).")
+            missing.append("Causal claims require at least one higher-quality source (tier 1–3) for verification.")
 
     elif ct == "historical":
-        # Keep baseline rule only (>=1 citation), allow tier 6.
+        # Keep baseline rule only (>=1 citation), allow any tier
         if not at_least_n_citations(1):
             gate_failed = True
             missing.append("Historical claims require at least one citation.")
@@ -317,7 +433,7 @@ def _apply_archetype_gate(data: dict, claim_type: str) -> dict:
 
     return data
 
-def verify_one(ollama_base: str, model: str, claim, evidence_bundle, outdir: str, temperature: float = 0.0) -> Verdict:
+def verify_one(ollama_base: str, model: str, claim, evidence_bundle, outdir: str, temperature: float = 0.0, transcript_json: dict = None) -> Verdict:
     snips = evidence_bundle.get("snippets", [])
 
     # Fast-fail if no evidence
@@ -332,10 +448,31 @@ def verify_one(ollama_base: str, model: str, claim, evidence_bundle, outdir: str
             source_tiers_used=[],
             red_flags=["anonymous_or_uncited"],
             citations=[],
-            missing_info=["Need at least one reputable source snippet relevant to the claim."]
+            missing_info=["Need at least one reputable source snippet relevant to the claim."],
+            rhetorical_issues=[]
         )
 
     compact = _compact_snippets(snips, max_snips=6, max_chars=500)
+
+    # Extract surrounding context from transcript
+    transcript_context = ""
+    if transcript_json:
+        segments = transcript_json.get("segments", [])
+        # Find the segment this claim is from
+        segment_id = claim.segment_id
+        segment_idx = None
+        for i, seg in enumerate(segments):
+            if seg.get("id") == segment_id:
+                segment_idx = i
+                break
+
+        if segment_idx is not None:
+            # Get 2 segments before and 2 after for context
+            context_segments = []
+            for i in range(max(0, segment_idx - 2), min(len(segments), segment_idx + 3)):
+                seg = segments[i]
+                context_segments.append(f"[{seg.get('timestamp', 'N/A')}] {seg.get('speaker', 'Speaker')}: {seg.get('text', '')}")
+            transcript_context = "\n".join(context_segments)
 
     payload = {
         "claim_id": claim.claim_id,
@@ -343,6 +480,7 @@ def verify_one(ollama_base: str, model: str, claim, evidence_bundle, outdir: str
         "quote_from_transcript": claim.quote_from_transcript,
         "claim_type": claim.claim_type,
         "evidence_snippets": compact,
+        "transcript_context": transcript_context,
     }
     user = json.dumps(payload, ensure_ascii=False)
 
@@ -382,7 +520,8 @@ def verify_one(ollama_base: str, model: str, claim, evidence_bundle, outdir: str
                 source_tiers_used=[],
                 red_flags=["verification_parse_failure"],
                 citations=[],
-                missing_info=["LLM output could not be parsed into a valid verdict."]
+                missing_info=["LLM output could not be parsed into a valid verdict."],
+                rhetorical_issues=[]
             )
 
     data = _normalize(data, claim.claim_id, compact)

@@ -14,11 +14,63 @@ from app.tools.snippets import make_snippets, top_k_snippets
 # ---------------------------
 
 def source_tier_guess(url: str) -> int:
+    """
+    Assign quality tier to source URL. Lower tier = higher quality.
+
+    Tier 1: Top scholarly journals and academic publishers
+    Tier 2: Academic institutions and university research
+    Tier 3: Government and international organizations
+    Tier 4: Major research organizations and think tanks
+    Tier 5: Established news agencies and fact-checkers
+    Tier 6: Everything else
+    """
     u = (url or "").lower()
-    if ".gov" in u or "who.int" in u or "oecd.org" in u or "worldbank.org" in u:
-        return 3
-    if ".edu" in u:
+
+    # Tier 1: Top scholarly journals and academic publishers
+    tier1_domains = [
+        "nature.com", "science.org", "sciencemag.org", "cell.com",
+        "thelancet.com", "nejm.org", "bmj.com", "jama.jamanetwork.com",
+        "springer.com", "sciencedirect.com", "wiley.com",
+        "oup.com", "cambridge.org", "jstor.org", "arxiv.org",
+        "plos.org", "frontiersin.org", "mdpi.com"
+    ]
+    if any(d in u for d in tier1_domains):
+        return 1
+
+    # Tier 2: Academic institutions (.edu, .ac.uk, etc.)
+    if ".edu" in u or ".ac.uk" in u or ".ac." in u:
         return 2
+
+    # Tier 3: Government and major international organizations
+    tier3_domains = [
+        ".gov", "who.int", "un.org", "oecd.org", "worldbank.org",
+        "imf.org", "europa.eu", "cdc.gov", "nih.gov", "census.gov"
+    ]
+    if any(d in u for d in tier3_domains):
+        return 3
+
+    # Tier 4: Major research organizations, think tanks, polling organizations
+    tier4_domains = [
+        "pewresearch.org", "pewsocialtrends.org", "pewtrusts.org",
+        "brookings.edu", "rand.org", "cfr.org", "carnegieendowment.org",
+        "heritage.org", "aei.org", "cato.org", "urban.org",
+        "kff.org", "gallup.com", "ipsos.com", "yougov.com",
+        "statista.com", "ourworldindata.org", "factcheck.org",
+        "politifact.com", "snopes.com", "usafacts.org"
+    ]
+    if any(d in u for d in tier4_domains):
+        return 4
+
+    # Tier 5: Established news agencies and major outlets
+    tier5_domains = [
+        "reuters.com", "apnews.com", "ap.org", "bbc.com", "bbc.co.uk",
+        "economist.com", "ft.com", "wsj.com", "nytimes.com",
+        "washingtonpost.com", "theguardian.com", "npr.org", "pbs.org"
+    ]
+    if any(d in u for d in tier5_domains):
+        return 5
+
+    # Tier 6: Everything else
     return 6
 
 def sha256(text: str) -> str:
@@ -56,6 +108,15 @@ def looks_like_junk_url(url: str) -> bool:
         "/amp", "/amp/",
         "/feed", "/rss", "sitemap",
         "utm_", "fbclid=", "gclid=",
+        # Forum patterns
+        "/forum/", "/forums/", "/thread/", "/topic/", "/discussion/",
+        "/showthread", "/viewtopic", "/board/", "/boards/",
+        # User-generated content patterns
+        "/user/", "/profile/", "/member/", "/members/",
+        # Comment sections and social features
+        "/comment/", "/comments/", "/reply/", "/replies/",
+        # Blog patterns (combined with deny_domains for blog platforms)
+        "/author/", "/contributor/",
     ]
     return any(b in u for b in bad_fragments)
 
