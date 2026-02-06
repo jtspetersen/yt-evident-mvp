@@ -93,26 +93,27 @@
     </div>
 </div>
 
-<!-- Counters -->
+<!-- Counters (seeded from manifest so they survive page reloads) -->
+{% set cnts = runner.manifest.get('counts', {}) %}
 <div class="grid" id="counters" style="margin:1rem 0;">
     <div>
-        <strong id="cnt-claims">0</strong>
+        <strong id="cnt-claims">{{ cnts.get('claims_kept', 0) }}</strong>
         <small>Claims</small>
     </div>
     <div>
-        <strong id="cnt-sources">0</strong>
+        <strong id="cnt-sources">{{ cnts.get('sources', 0) }}</strong>
         <small>Sources</small>
     </div>
     <div>
-        <strong id="cnt-snippets">0</strong>
+        <strong id="cnt-snippets">{{ cnts.get('snippets', 0) }}</strong>
         <small>Snippets</small>
     </div>
     <div>
-        <strong id="cnt-verdicts">0</strong>
+        <strong id="cnt-verdicts">{{ cnts.get('verdicts', 0) }}</strong>
         <small>Verdicts</small>
     </div>
     <div>
-        <strong id="cnt-failures">0</strong>
+        <strong id="cnt-failures">{{ cnts.get('fetch_failures', 0) }}</strong>
         <small>Failures</small>
     </div>
 </div>
@@ -351,7 +352,7 @@
         });
 
         if (data.status === 'ok') {
-            addLog('Run complete! Score: ' + data.score + '/100. Redirecting to report...');
+            addLog('Run complete! Redirecting to report...');
             setTimeout(function() {
                 window.location.href = '/run/' + runId + '/report';
             }, 2000);

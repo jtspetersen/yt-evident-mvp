@@ -57,7 +57,7 @@ Write a conversational video script in markdown suitable for narration.
 Structure it as:
 
 ## Introduction
-A brief opening stating the video/channel being reviewed and the overall score.
+A brief opening stating the video/channel being reviewed and a summary of verdict counts.
 
 ## Analysis
 Walk through the claims grouped by severity/impact. For each claim:
@@ -92,14 +92,12 @@ TIER_LABELS = {
 }
 
 
-def _build_executive_overview(channel, overall, counts, red_flags):
+def _build_executive_overview(channel, counts, red_flags):
     """Build the top-of-report summary from scorecard data."""
     lines = [
         f"# Evident Fact-Check Report: {channel}",
         "",
         "## Executive Overview",
-        "",
-        f"**Overall Truthfulness Score: {overall}/100**",
         "",
         "| Rating | Count |",
         "|--------|-------|",
@@ -212,11 +210,11 @@ def write_outline_and_script(
     built in Python. Two separate LLM calls generate the key findings (JSON)
     and narrative script (plain markdown) for reliability.
     """
-    # --- Parse score data from scorecard_md ---
-    overall, counts, red_flags = _parse_scorecard(scorecard_md)
+    # --- Parse scorecard data ---
+    counts, red_flags = _parse_scorecard(scorecard_md)
 
     # --- Deterministic sections ---
-    executive = _build_executive_overview(channel, overall, counts, red_flags)
+    executive = _build_executive_overview(channel, counts, red_flags)
     details = _build_claim_details(verdicts, claims or [])
     sources = _build_sources_appendix(verdicts)
 
@@ -311,19 +309,10 @@ def _generate_narrative_script(ollama_base, model, payload_json):
 # ---------------------------------------------------------------------------
 
 def _parse_scorecard(scorecard_md: str):
-    """Extract overall score, counts, and red_flags from the scorecard markdown."""
-    overall = 0
+    """Extract counts and red_flags from the scorecard markdown."""
     counts = {}
     red_flags = {}
 
-    for line in scorecard_md.splitlines():
-        if line.startswith("**Overall score:**"):
-            try:
-                overall = int(line.split("**")[2].strip().split("/")[0])
-            except (IndexError, ValueError):
-                pass
-
-    # Extract JSON blocks from scorecard sections
     sections = scorecard_md.split("##")
     for sec in sections:
         sec_stripped = sec.strip()
@@ -338,7 +327,7 @@ def _parse_scorecard(scorecard_md: str):
             except (json.JSONDecodeError, IndexError):
                 pass
 
-    return overall, counts, red_flags
+    return counts, red_flags
 
 
 def write_text(path: str, text: str):

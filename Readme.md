@@ -8,7 +8,7 @@ A local fact-checking pipeline for analyzing video transcripts and verifying cla
 - **Claim extraction** - Overlapping chunks prevent missing claims at segment boundaries
 - **Evidence retrieval** - 6-tier quality system prioritizes scholarly sources over forums/blogs
 - **Claim verification** - LLM reasoning with citations, confidence scoring, and rhetorical analysis
-- **Report generation** - Detailed verdicts, 0-100 truthfulness score, and video script outline
+- **Report generation** - Detailed verdicts with verdict count summaries, and video script outline
 
 ## Quick Start
 
@@ -58,7 +58,7 @@ Then open **http://localhost:8000** in your browser.
 - Real-time progress dashboard with per-stage progress bars (extract, retrieve, verify)
 - Live counters for claims, sources, snippets, and failures
 - Optional claim review step — edit or drop claims before verification
-- Rendered report with score badge and artifact downloads
+- Rendered report with verdict summary badges and artifact downloads
 - Past runs history
 
 The web UI uses the same pipeline as the CLI. No additional services are required beyond Ollama and SearXNG.
@@ -149,6 +149,19 @@ budgets:
   max_fetches_per_run: 80
 ```
 
+### Verdict Ratings
+
+Each claim receives one of six ratings:
+
+| Rating | Meaning |
+|--------|---------|
+| VERIFIED | Confirmed by strong evidence |
+| LIKELY TRUE | Supported but not fully confirmed |
+| INSUFFICIENT EVIDENCE | Not enough quality sources found |
+| CONFLICTING EVIDENCE | Credible sources disagree |
+| LIKELY FALSE | Evidence suggests the claim is wrong |
+| FALSE | Clearly contradicted by strong evidence |
+
 ### Source Quality Tiers
 
 The pipeline uses a 6-tier source quality system:
@@ -174,8 +187,8 @@ runs/YYYYMMDD_HHMMSS__channel__video_title/
 ├── 03_sources.json                 # Retrieved evidence
 ├── 04_snippets.json                # Evidence snippets
 ├── 05_verdicts.json                # Verification results
-├── 06_scorecard.md                 # Summary (0-100 score)
-├── 07_08_review_outline_and_script.md  # Video script
+├── 06_scorecard.md                 # Verdict counts and source tiers
+├── 07_summary.md                      # Video script
 ├── run.json                        # Run metadata
 └── run.log                         # Execution log
 ```

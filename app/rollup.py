@@ -31,11 +31,6 @@ def main():
 def print_channel(ch, s):
     print(f"Channel: {ch}")
     print(f"  Runs: {s['runs']}")
-    if s["avg_score"] is None:
-        print("  Avg score: n/a")
-    else:
-        print(f"  Avg score: {s['avg_score']:.1f}")
-
     if s["verdict_totals"]:
         print(f"  Verdict totals: {s['verdict_totals']}")
     if s["top_red_flags"]:
@@ -51,9 +46,8 @@ def print_channel(ch, s):
     for r in s["recent"]:
         ts = r.get("timestamp") or "?"
         rid = r.get("run_id") or "?"
-        sc = r.get("overall_score")
         inp = r.get("input_file") or "?"
-        print(f"    - {ts} | {rid} | score={sc} | {inp}")
+        print(f"    - {ts} | {rid} | {inp}")
 
 if __name__ == "__main__":
     main()

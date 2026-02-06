@@ -302,7 +302,7 @@ def _load_report_from_disk(run_id: str) -> tuple:
     scorecard = manifest.get("scorecard", {})
 
     # Load report markdown
-    report_md_path = os.path.join(outdir, "07_08_review_outline_and_script.md")
+    report_md_path = os.path.join(outdir, "07_summary.md")
     if os.path.isfile(report_md_path):
         with open(report_md_path, "r", encoding="utf-8") as f:
             report_md = f.read()

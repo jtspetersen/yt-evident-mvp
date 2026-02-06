@@ -8,27 +8,18 @@
     <p>Run <strong>{{ run_id }}</strong></p>
 </hgroup>
 
-<!-- Score banner -->
+<!-- Verdict summary -->
 {% if scorecard %}
-<div style="display:flex; align-items:center; gap:2rem; margin-bottom:1.5rem; padding:1rem; border-radius:8px; background:var(--pico-card-background-color);">
-    <div style="text-align:center;">
-        {% set score_val = scorecard.get('overall', 0) %}
-        <div class="score-big" style="color:{% if score_val >= 70 %}#2e7d32{% elif score_val >= 40 %}#e65100{% else %}#c62828{% endif %};">
-            {{ score_val }}
-        </div>
-        <div class="score-label">/ 100</div>
-    </div>
-    <div>
-        {% set vc = scorecard.get('verdict_counts', {}) %}
-        {% for rating in ['VERIFIED', 'LIKELY TRUE', 'INSUFFICIENT EVIDENCE', 'CONFLICTING EVIDENCE', 'LIKELY FALSE', 'FALSE'] %}
-            {% set count = vc.get(rating, 0) %}
-            {% if count > 0 %}
-            <span class="badge badge-{{ rating.lower().replace(' ', '-') }}" style="margin-right:0.3rem;">
-                {{ rating }}: {{ count }}
-            </span>
-            {% endif %}
-        {% endfor %}
-    </div>
+<div style="display:flex; align-items:center; gap:1rem; flex-wrap:wrap; margin-bottom:1.5rem; padding:1rem; border-radius:8px; background:var(--pico-card-background-color);">
+    {% set vc = scorecard.get('verdict_counts', {}) %}
+    {% for rating in ['VERIFIED', 'LIKELY TRUE', 'INSUFFICIENT EVIDENCE', 'CONFLICTING EVIDENCE', 'LIKELY FALSE', 'FALSE'] %}
+        {% set count = vc.get(rating, 0) %}
+        {% if count > 0 %}
+        <span class="badge badge-{{ rating.lower().replace(' ', '-') }}" style="margin-right:0.3rem;">
+            {{ rating }}: {{ count }}
+        </span>
+        {% endif %}
+    {% endfor %}
 </div>
 {% endif %}
 

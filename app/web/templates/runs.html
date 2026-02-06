@@ -14,7 +14,6 @@
         <tr>
             <th>Date</th>
             <th>Run ID</th>
-            <th>Score</th>
             <th>Verdicts</th>
             <th>Duration</th>
             <th></th>
@@ -25,12 +24,6 @@
         <tr>
             <td><small>{{ r.get('timestamp', '')[:19] }}</small></td>
             <td><code>{{ r.get('run_id', '?') }}</code></td>
-            <td>
-                {% set s = r.get('overall_score', 0) %}
-                <strong style="color:{% if s >= 70 %}#2e7d32{% elif s >= 40 %}#e65100{% else %}#c62828{% endif %};">
-                    {{ s }}/100
-                </strong>
-            </td>
             <td>
                 {% set vc = r.get('verdict_counts', {}) %}
                 {% for rating in ['VERIFIED', 'LIKELY TRUE', 'INSUFFICIENT EVIDENCE', 'CONFLICTING EVIDENCE', 'LIKELY FALSE', 'FALSE'] %}

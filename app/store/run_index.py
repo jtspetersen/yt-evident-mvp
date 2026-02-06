@@ -7,7 +7,6 @@ def append_run_index(
     run_id: str,
     input_file: str,
     outdir: str,
-    overall_score: int,
     verdict_counts: dict,
     duration_sec: float,
 ):
@@ -18,7 +17,6 @@ def append_run_index(
         "timestamp": datetime.now().isoformat(),
         "input_file": input_file,
         "outdir": outdir,
-        "overall_score": overall_score,
         "verdict_counts": verdict_counts,
         "duration_sec": round(float(duration_sec), 2),
     }

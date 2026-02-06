@@ -21,7 +21,7 @@ from app.pipeline.ingest import normalize_transcript, write_json
 from app.pipeline.extract_claims import extract_claims
 from app.pipeline.retrieve_evidence import retrieve_for_claims
 from app.pipeline.verify_claims import verify_one
-from app.pipeline.scorecard import score
+from app.pipeline.scorecard import tally
 from app.pipeline.write_outputs import write_text, write_outline_and_script
 
 
@@ -230,7 +230,6 @@ def write_artifacts_index(outdir: str, manifest: dict) -> None:
         else:
             stage_lines.append(f"- `{sk}` — (not run)")
 
-    overall = manifest.get("scorecard", {}).get("overall")
     status = manifest.get("status")
     run_id = manifest.get("run_id")
 
@@ -248,7 +247,6 @@ def write_artifacts_index(outdir: str, manifest: dict) -> None:
 
 - **Run ID:** `{run_id}`
 - **Status:** `{status}`
-- **Overall score:** `{overall}`
 
 ## Quick links (files)
 - **Manifest:** `{art('manifest')}`
@@ -593,12 +591,10 @@ def main():
         # 5) Scorecard
         log.log("Stage 5: scorecard")
         s = stage_start(manifest, "scorecard")
-        overall, counts, red_flags, tiers = score(verdicts)
+        counts, red_flags, tiers = tally(verdicts)
         stage_end(manifest, "scorecard", s)
 
         scorecard_md = f"""# Evident Scorecard
-
-**Overall score:** {overall}/100
 
 ## Verdict counts
 {json.dumps(counts, indent=2)}
@@ -613,7 +609,6 @@ def main():
         add_artifact(manifest, "scorecard_md", "06_scorecard.md")
 
         manifest["scorecard"] = {
-            "overall": int(overall),
             "verdict_counts": counts,
             "tiers": tiers,
             "red_flags": red_flags,
@@ -636,8 +631,8 @@ def main():
         )
         stage_end(manifest, "write_outline_and_script", s)
 
-        write_text(os.path.join(outdir, "07_08_review_outline_and_script.md"), writer_md)
-        add_artifact(manifest, "writer_md", "07_08_review_outline_and_script.md")
+        write_text(os.path.join(outdir, "07_summary.md"), writer_md)
+        add_artifact(manifest, "writer_md", "07_summary.md")
 
         manifest["status"] = "ok"
 
@@ -646,7 +641,6 @@ def main():
             run_id=manifest["run_id"],
             input_file=manifest["infile"],
             outdir=manifest["outdir"],
-            overall_score=int(manifest["scorecard"]["overall"]),
             verdict_counts=manifest["scorecard"]["verdict_counts"],
             duration_sec=time.time() - t0,
         )
@@ -657,7 +651,6 @@ def main():
         append_creator_profile_event(
             channel=manifest["channel"]["raw"],
             run_id=manifest["run_id"],
-            overall_score=int(manifest["scorecard"]["overall"]),
             verdict_counts=manifest["scorecard"]["verdict_counts"],
             red_flags=manifest["scorecard"].get("red_flags", []) if isinstance(manifest["scorecard"].get("red_flags"), list) else [],
             topics=topics,

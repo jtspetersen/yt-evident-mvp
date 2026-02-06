@@ -25,7 +25,7 @@ from app.pipeline.ingest import normalize_transcript, write_json
 from app.pipeline.extract_claims import extract_claims
 from app.pipeline.retrieve_evidence import retrieve_for_claims
 from app.pipeline.verify_claims import verify_one
-from app.pipeline.scorecard import score
+from app.pipeline.scorecard import tally
 from app.pipeline.write_outputs import write_text, write_outline_and_script
 
 
@@ -551,12 +551,10 @@ class PipelineRunner:
             # ----- Stage 5: Scorecard -----
             self._log_and_emit(log, "Stage 5: scorecard")
             s = self._stage_start("scorecard")
-            overall, counts, red_flags, tiers = score(verdicts)
+            counts, red_flags, tiers = tally(verdicts)
             self._stage_end("scorecard", s)
 
             scorecard_md = f"""# Evident Scorecard
-
-**Overall score:** {overall}/100
 
 ## Verdict counts
 {json.dumps(counts, indent=2)}
@@ -571,7 +569,6 @@ class PipelineRunner:
             self._add_artifact("scorecard_md", "06_scorecard.md")
 
             self.manifest["scorecard"] = {
-                "overall": int(overall),
                 "verdict_counts": counts,
                 "tiers": tiers,
                 "red_flags": red_flags,
@@ -592,8 +589,8 @@ class PipelineRunner:
             )
             self._stage_end("write_outline_and_script", s)
 
-            write_text(os.path.join(self.outdir, "07_08_review_outline_and_script.md"), writer_md)
-            self._add_artifact("writer_md", "07_08_review_outline_and_script.md")
+            write_text(os.path.join(self.outdir, "07_summary.md"), writer_md)
+            self._add_artifact("writer_md", "07_summary.md")
             self.report_md = writer_md
 
             # ----- Finalize -----
@@ -603,7 +600,6 @@ class PipelineRunner:
                 run_id=self.manifest["run_id"],
                 input_file=self.manifest["infile"],
                 outdir=self.manifest["outdir"],
-                overall_score=int(self.manifest["scorecard"]["overall"]),
                 verdict_counts=self.manifest["scorecard"]["verdict_counts"],
                 duration_sec=time.time() - t0,
             )
@@ -613,7 +609,6 @@ class PipelineRunner:
             append_creator_profile_event(
                 channel=self.manifest["channel"]["raw"],
                 run_id=self.manifest["run_id"],
-                overall_score=int(self.manifest["scorecard"]["overall"]),
                 verdict_counts=self.manifest["scorecard"]["verdict_counts"],
                 red_flags=self.manifest["scorecard"].get("red_flags", []) if isinstance(self.manifest["scorecard"].get("red_flags"), list) else [],
                 topics=topics,
@@ -622,13 +617,12 @@ class PipelineRunner:
             )
 
             self._save_manifest()
-            self._log_and_emit(log, f"RUN COMPLETE score={overall}/100 outdir={self.outdir}")
+            self._log_and_emit(log, f"RUN COMPLETE outdir={self.outdir}")
 
             # Emit done event BEFORE setting status so SSE generator
             # doesn't see "done" status while queue is still empty
             self.emit("done", {
                 "status": "ok",
-                "score": int(overall),
                 "outdir": self.outdir,
             })
             self.status = "done"

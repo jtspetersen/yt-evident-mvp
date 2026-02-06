@@ -9,7 +9,6 @@ def _ensure_store():
 def append_creator_profile_event(
     channel: str,
     run_id: str,
-    overall_score: int,
     verdict_counts: dict,
     red_flags: list,
     topics: list,
@@ -26,7 +25,6 @@ def append_creator_profile_event(
         "timestamp": datetime.now().isoformat(),
         "channel": channel or "Unknown",
         "run_id": run_id,
-        "overall_score": int(overall_score),
         "verdict_counts": verdict_counts or {},
         "red_flags": red_flags or [],
         "topics": topics or [],
