@@ -6,8 +6,10 @@ import time
 import argparse
 import re
 import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from dotenv import load_dotenv
+from tqdm import tqdm
 
 from app.tools.logger import make_run_logger
 from app.store.run_index import append_run_index
@@ -19,7 +21,7 @@ from app.pipeline.ingest import normalize_transcript, write_json
 from app.pipeline.extract_claims import extract_claims
 from app.pipeline.retrieve_evidence import retrieve_for_claims
 from app.pipeline.verify_claims import verify_one
-from app.pipeline.scorecard import score
+from app.pipeline.scorecard import tally
 from app.pipeline.write_outputs import write_text, write_outline_and_script
 
 
@@ -228,7 +230,6 @@ def write_artifacts_index(outdir: str, manifest: dict) -> None:
         else:
             stage_lines.append(f"- `{sk}` — (not run)")
 
-    overall = manifest.get("scorecard", {}).get("overall")
     status = manifest.get("status")
     run_id = manifest.get("run_id")
 
@@ -246,7 +247,6 @@ def write_artifacts_index(outdir: str, manifest: dict) -> None:
 
 - **Run ID:** `{run_id}`
 - **Status:** `{status}`
-- **Overall score:** `{overall}`
 
 ## Quick links (files)
 - **Manifest:** `{art('manifest')}`
@@ -524,24 +524,49 @@ def main():
         log.log("Stage 4: verify claims")
         s = stage_start(manifest, "verify_claims")
 
-        verdicts = []
-        per_claim_secs = []
-        for idx, c in enumerate(claims, start=1):
-            bundle = evidence_by_claim.get(c.claim_id, {})
-            t_claim = time.time()
+        verify_workers = int(cfg["budgets"].get("verify_workers", 3))
+
+        def _verify_task(claim):
+            """Run verify_one for a single claim. Executed in a worker thread."""
+            t0v = time.time()
             v = verify_one(
                 cfg["ollama"]["base_url"],
                 cfg["ollama"]["model_verify"],
-                c,
-                bundle,
+                claim,
+                evidence_by_claim.get(claim.claim_id, {}),
                 outdir,
                 temperature=cfg["ollama"].get("temperature_verify", 0.0),
                 transcript_json=transcript_json,
             )
+            return claim.claim_id, v, round(time.time() - t0v, 4)
+
+        # Submit all claims, collect results preserving original order
+        results_by_id = {}   # claim_id -> (verdict, sec)
+        verify_bar = tqdm(
+            total=len(claims),
+            desc="Verifying claims",
+            unit=" claim",
+            bar_format="{desc}: {n_fmt}/{total_fmt} claims | {elapsed}",
+            leave=False,
+        )
+
+        with ThreadPoolExecutor(max_workers=verify_workers) as executor:
+            futures = {executor.submit(_verify_task, c): c for c in claims}
+            for fut in as_completed(futures):
+                claim_id, v, sec = fut.result()
+                results_by_id[claim_id] = (v, sec)
+                verify_bar.update(1)
+                log.log(f"Verified {len(results_by_id)}/{len(claims)} claim_id={claim_id} rating={v.rating} conf={v.confidence} sec={sec}")
+
+        verify_bar.close()
+
+        # Rebuild lists in original claim order
+        verdicts = []
+        per_claim_secs = []
+        for c in claims:
+            v, sec = results_by_id[c.claim_id]
             verdicts.append(v)
-            sec = round(time.time() - t_claim, 4)
             per_claim_secs.append(sec)
-            log.log(f"Verified {idx}/{len(claims)} claim_id={c.claim_id} rating={v.rating} conf={v.confidence} sec={round(sec,2)}")
 
         stage_end(manifest, "verify_claims", s)
 
@@ -566,12 +591,10 @@ def main():
         # 5) Scorecard
         log.log("Stage 5: scorecard")
         s = stage_start(manifest, "scorecard")
-        overall, counts, red_flags, tiers = score(verdicts)
+        counts, red_flags, tiers = tally(verdicts)
         stage_end(manifest, "scorecard", s)
 
         scorecard_md = f"""# Evident Scorecard
-
-**Overall score:** {overall}/100
 
 ## Verdict counts
 {json.dumps(counts, indent=2)}
@@ -586,7 +609,6 @@ def main():
         add_artifact(manifest, "scorecard_md", "06_scorecard.md")
 
         manifest["scorecard"] = {
-            "overall": int(overall),
             "verdict_counts": counts,
             "tiers": tiers,
             "red_flags": red_flags,
@@ -604,11 +626,13 @@ def main():
             transcript_json,
             verdicts,
             scorecard_md,
+            claims,
+            manifest["channel"]["raw"],
         )
         stage_end(manifest, "write_outline_and_script", s)
 
-        write_text(os.path.join(outdir, "07_08_review_outline_and_script.md"), writer_md)
-        add_artifact(manifest, "writer_md", "07_08_review_outline_and_script.md")
+        write_text(os.path.join(outdir, "07_summary.md"), writer_md)
+        add_artifact(manifest, "writer_md", "07_summary.md")
 
         manifest["status"] = "ok"
 
@@ -617,7 +641,6 @@ def main():
             run_id=manifest["run_id"],
             input_file=manifest["infile"],
             outdir=manifest["outdir"],
-            overall_score=int(manifest["scorecard"]["overall"]),
             verdict_counts=manifest["scorecard"]["verdict_counts"],
             duration_sec=time.time() - t0,
         )
@@ -628,7 +651,6 @@ def main():
         append_creator_profile_event(
             channel=manifest["channel"]["raw"],
             run_id=manifest["run_id"],
-            overall_score=int(manifest["scorecard"]["overall"]),
             verdict_counts=manifest["scorecard"]["verdict_counts"],
             red_flags=manifest["scorecard"].get("red_flags", []) if isinstance(manifest["scorecard"].get("red_flags"), list) else [],
             topics=topics,

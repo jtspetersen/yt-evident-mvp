@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+
+{% block title %}Evident — Error{% endblock %}
+
+{% block content %}
+<hgroup>
+    <h1>Error</h1>
+    <p>{{ message }}</p>
+</hgroup>
+
+<div style="margin-top:1rem;">
+    <a href="/" role="button" class="outline">Back to Home</a>
+    <a href="/runs" role="button" class="outline secondary">Past Runs</a>
+</div>
+{% endblock %}

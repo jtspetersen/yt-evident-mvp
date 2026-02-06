@@ -14,7 +14,10 @@ claim_id, rating, confidence, explanation, corrected_claim, severity,
 source_tiers_used, red_flags, citations, missing_info, rhetorical_issues
 
 rating MUST be exactly one of:
-VERIFIED, LIKELY TRUE, UNCERTAIN, LIKELY FALSE, FALSE
+VERIFIED, LIKELY TRUE, INSUFFICIENT EVIDENCE, CONFLICTING EVIDENCE, LIKELY FALSE, FALSE
+
+Use INSUFFICIENT EVIDENCE when no relevant or credible evidence was found.
+Use CONFLICTING EVIDENCE when multiple credible sources contradict each other on the claim.
 
 CRITICAL - Array fields must be arrays, NOT strings:
 - source_tiers_used: [6] or [2, 3] (array of integers)
@@ -23,12 +26,12 @@ CRITICAL - Array fields must be arrays, NOT strings:
 - rhetorical_issues: ["false_causation"] (array of strings)
 - citations: array of objects with keys: source_id, snippet_id, tier, url, quote
 
-Example response format:
+Example response format (insufficient evidence):
 {
   "claim_id": "C001",
-  "rating": "UNCERTAIN",
-  "confidence": 0.4,
-  "explanation": "Evidence is insufficient to verify this claim.",
+  "rating": "INSUFFICIENT EVIDENCE",
+  "confidence": 0.3,
+  "explanation": "No credible sources were found to verify or refute this claim.",
   "corrected_claim": null,
   "severity": "medium",
   "source_tiers_used": [6],
@@ -38,13 +41,44 @@ Example response format:
   "rhetorical_issues": []
 }
 
+Example response format (conflicting evidence):
+{
+  "claim_id": "C002",
+  "rating": "CONFLICTING EVIDENCE",
+  "confidence": 0.4,
+  "explanation": "Multiple credible sources disagree on this claim. Source A reports X while Source B reports Y.",
+  "corrected_claim": null,
+  "severity": "medium",
+  "source_tiers_used": [3, 5],
+  "red_flags": ["conflicting_sources"],
+  "citations": [
+    {
+      "source_id": "SRC0001",
+      "snippet_id": "SNIP00001",
+      "tier": 3,
+      "url": "https://example.gov/report",
+      "quote": "Quote supporting the claim..."
+    },
+    {
+      "source_id": "SRC0002",
+      "snippet_id": "SNIP00005",
+      "tier": 5,
+      "url": "https://example.com/article",
+      "quote": "Quote contradicting the claim..."
+    }
+  ],
+  "missing_info": [],
+  "rhetorical_issues": []
+}
+
 CRITICAL CITATION RULES:
 1. If you use ANY evidence snippet in your reasoning, you MUST cite it in citations array
 2. When rating FALSE/LIKELY FALSE/VERIFIED/LIKELY TRUE, you MUST include citations
 3. Extract snippet_id, source_id, tier, url from the evidence_snippets provided
 4. Include a relevant quote (excerpt from the snippet) in each citation
 5. Do not invent source_id or snippet_id; use only those provided in evidence_snippets
-6. Only use UNCERTAIN with empty citations if evidence snippets are genuinely irrelevant
+6. Only use INSUFFICIENT EVIDENCE with empty citations if evidence snippets are genuinely irrelevant
+7. Use CONFLICTING EVIDENCE (with citations from both sides) when credible sources disagree
 
 Example with citations:
 {
@@ -87,8 +121,9 @@ Rules:
 - Use ONLY the evidence snippets provided
 - Check transcript_context to see how claim is being used rhetorically
 - Be confident in FALSE ratings when evidence clearly contradicts the claim
-- For obviously false claims (e.g., "90 million" when data shows ~11 million), use FALSE not UNCERTAIN
-- If no relevant evidence found, use UNCERTAIN
+- For obviously false claims (e.g., "90 million" when data shows ~11 million), use FALSE not INSUFFICIENT EVIDENCE
+- If no relevant evidence found, use INSUFFICIENT EVIDENCE
+- If credible sources contradict each other, use CONFLICTING EVIDENCE
 - ALWAYS cite evidence snippets that inform your rating (use citations array)
 """
 
@@ -103,7 +138,7 @@ source_tiers_used, red_flags, citations, missing_info, rhetorical_issues
 
 Required field types:
 - claim_id: string
-- rating: MUST be exactly one of: VERIFIED, LIKELY TRUE, UNCERTAIN, LIKELY FALSE, FALSE
+- rating: MUST be exactly one of: VERIFIED, LIKELY TRUE, INSUFFICIENT EVIDENCE, CONFLICTING EVIDENCE, LIKELY FALSE, FALSE
 - confidence: number between 0 and 1
 - explanation: string (required, must not be empty)
 - corrected_claim: string or null
@@ -119,7 +154,7 @@ CRITICAL: Use these EXACT key names. Do NOT use alternatives like:
 - "verification_reason" (use "explanation")
 - Any other variations
 
-If citations is empty, rating MUST be UNCERTAIN and confidence <= 0.4.
+If citations is empty, rating MUST be INSUFFICIENT EVIDENCE and confidence <= 0.4.
 """
 
 def _compact_snippets(snips, max_snips: int = 6, max_chars: int = 500):
@@ -195,7 +230,7 @@ def _normalize(data: dict, claim_id: str, sent_snippets: list) -> dict:
     else:
         rating = None
 
-    allowed = {"VERIFIED", "LIKELY TRUE", "UNCERTAIN", "LIKELY FALSE", "FALSE"}
+    allowed = {"VERIFIED", "LIKELY TRUE", "INSUFFICIENT EVIDENCE", "CONFLICTING EVIDENCE", "LIKELY FALSE", "FALSE"}
     if rating not in allowed:
         verdict_hint = None
         for k in ["verdict", "label", "result", "classification"]:
@@ -209,7 +244,7 @@ def _normalize(data: dict, claim_id: str, sent_snippets: list) -> dict:
         elif verdict_hint == "FALSE":
             rating = "FALSE"
         else:
-            rating = "UNCERTAIN"
+            rating = "INSUFFICIENT EVIDENCE"
     data["rating"] = rating
 
     # Confidence
@@ -217,7 +252,7 @@ def _normalize(data: dict, claim_id: str, sent_snippets: list) -> dict:
     try:
         conf = float(conf)
     except Exception:
-        conf = 0.4 if data["rating"] == "UNCERTAIN" else 0.6
+        conf = 0.4 if data["rating"] in ("INSUFFICIENT EVIDENCE", "CONFLICTING EVIDENCE") else 0.6
     conf = max(0.0, min(1.0, conf))
     data["confidence"] = conf
 
@@ -299,14 +334,14 @@ def _normalize(data: dict, claim_id: str, sent_snippets: list) -> dict:
 
     data["citations"] = fixed_citations
 
-    # Enforce evidence gate (baseline): no citations => UNCERTAIN low confidence
+    # Enforce evidence gate (baseline): no citations => INSUFFICIENT EVIDENCE low confidence
     # EXCEPTION: Allow FALSE/LIKELY FALSE ratings when evidence clearly contradicts claim
     if not data.get("citations"):
-        current_rating = data.get("rating", "UNCERTAIN")
+        current_rating = data.get("rating", "INSUFFICIENT EVIDENCE")
         # Allow negative ratings (FALSE, LIKELY FALSE) to stand even without citations
         # if the model determined the claim is contradicted by evidence
         if current_rating not in ["FALSE", "LIKELY FALSE"]:
-            data["rating"] = "UNCERTAIN"
+            data["rating"] = "INSUFFICIENT EVIDENCE"
             data["confidence"] = min(data["confidence"], 0.4)
             if not data["missing_info"]:
                 data["missing_info"] = ["Need at least one reputable source snippet relevant to the claim."]
@@ -343,7 +378,7 @@ def _apply_archetype_gate(data: dict, claim_type: str) -> dict:
     relaxed for negative ratings (FALSE, LIKELY FALSE) since any reliable evidence can disprove.
     """
     ct = _norm_claim_type(claim_type)
-    current_rating = data.get("rating", "UNCERTAIN")
+    current_rating = data.get("rating", "INSUFFICIENT EVIDENCE")
 
     # Only apply strict tier gates to positive ratings
     # Negative ratings (FALSE, LIKELY FALSE) can use any tier if evidence clearly contradicts
@@ -412,7 +447,7 @@ def _apply_archetype_gate(data: dict, claim_type: str) -> dict:
     # definition/other: baseline already enforced.
 
     if gate_failed:
-        data["rating"] = "UNCERTAIN"
+        data["rating"] = "INSUFFICIENT EVIDENCE"
         data["confidence"] = min(float(data.get("confidence", 0.4)), 0.4)
         # make sure missing_info is a list
         mi = data.get("missing_info")
@@ -440,7 +475,7 @@ def verify_one(ollama_base: str, model: str, claim, evidence_bundle, outdir: str
     if not snips:
         return Verdict(
             claim_id=claim.claim_id,
-            rating="UNCERTAIN",
+            rating="INSUFFICIENT EVIDENCE",
             confidence=0.2,
             explanation="No evidence snippets were retrieved for this claim, so it cannot be verified.",
             corrected_claim=None,
@@ -488,7 +523,8 @@ def verify_one(ollama_base: str, model: str, claim, evidence_bundle, outdir: str
         ollama_base, model, SYSTEM, user,
         temperature=temperature,
         force_json=True,
-        timeout_sec=900
+        timeout_sec=900,
+        show_progress=True
     )
 
     os.makedirs(outdir, exist_ok=True)
@@ -503,16 +539,17 @@ def verify_one(ollama_base: str, model: str, claim, evidence_bundle, outdir: str
                 ollama_base, model, RETRY_SYSTEM, user,
                 temperature=0.0,
                 force_json=True,
-                timeout_sec=900
+                timeout_sec=900,
+                show_progress=True
             )
             with open(os.path.join(outdir, f"raw_verifier_{claim.claim_id}_retry.txt"), "w", encoding="utf-8") as f:
                 f.write(raw2)
             data = extract_json(raw2)
         except Exception as e:
-            # Fallback: return UNCERTAIN instead of crashing the whole run
+            # Fallback: return INSUFFICIENT EVIDENCE instead of crashing the whole run
             return Verdict(
                 claim_id=claim.claim_id,
-                rating="UNCERTAIN",
+                rating="INSUFFICIENT EVIDENCE",
                 confidence=0.3,
                 explanation=f"Verification failed after retry: {type(e).__name__}: {e}",
                 corrected_claim=None,

@@ -3,7 +3,7 @@
 
 .PHONY: help setup start stop restart status logs logs-app logs-ollama logs-searxng \
         run review shell models models-pull models-rm \
-        clean clean-cache clean-all build build-no-cache
+        clean clean-cache clean-all build build-no-cache web
 
 # Default target
 .DEFAULT_GOAL := help
@@ -55,6 +55,9 @@ help: ## Show this help message
 	@echo "Pipeline Execution (Docker):"
 	@echo "  make run ARGS='...'           - Run pipeline in Docker container"
 	@echo "  make review ARGS='...'        - Run in Docker with review mode"
+	@echo ""
+	@echo "Web UI:"
+	@echo "  make web                      - Start browser UI at http://localhost:8000"
 	@echo ""
 	@echo "Examples:"
 	@echo "  make runvid ARGS='--infile inbox/transcript.txt --channel YourChannel'"
@@ -154,6 +157,9 @@ runvid-review: ## Run pipeline natively in review mode (use ARGS='...')
 		exit 1; \
 	fi
 	. .venv/Scripts/activate && python -m app.main --review $(ARGS)
+
+web: ## Start web UI at http://localhost:8000
+	. .venv/Scripts/activate && python -m app.web.server
 
 # ----------------------------
 # Shell Access

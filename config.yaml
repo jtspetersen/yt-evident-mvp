@@ -42,7 +42,7 @@ budgets:
   snippets_per_source: 4
   snippet_max_chars: 1200
 
-  # Second pass settings (only for high-severity UNCERTAIN)
+  # Second pass settings (only for high-severity INSUFFICIENT EVIDENCE)
   second_pass_enabled: true
   second_pass_max_claims: 12
   second_pass_extra_sources_per_claim: 5

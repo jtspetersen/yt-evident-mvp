@@ -1,0 +1,146 @@
+{% extends "base.html" %}
+
+{% block title %}Evident — Review Claims ({{ run_id }}){% endblock %}
+
+{% block content %}
+<hgroup>
+    <h1>Review Claims</h1>
+    <p>Run <strong>{{ run_id }}</strong> &mdash; {{ claims|length }} claims extracted. Review, edit, or drop claims before verification.</p>
+</hgroup>
+
+<form id="review-form">
+    <table>
+        <thead>
+            <tr>
+                <th style="width:3rem;">Keep</th>
+                <th style="width:5rem;">ID</th>
+                <th style="width:8rem;">Type</th>
+                <th>Claim</th>
+                <th style="width:5rem;">Edit</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for c in claims %}
+            <tr id="row-{{ c.claim_id }}" data-claim-id="{{ c.claim_id }}">
+                <td>
+                    <input type="checkbox" class="keep-check"
+                           data-claim-id="{{ c.claim_id }}" checked>
+                </td>
+                <td><code>{{ c.claim_id }}</code></td>
+                <td>
+                    <span class="badge" style="background:#546e7a;color:#fff;font-size:0.75em;">
+                        {{ c.claim_type }}
+                    </span>
+                </td>
+                <td>
+                    <div class="claim-text" id="text-{{ c.claim_id }}">{{ c.claim_text }}</div>
+                    <div class="edit-panel" id="edit-{{ c.claim_id }}" style="display:none; margin-top:0.5rem;">
+                        <label>
+                            <small>Claim text:</small>
+                            <textarea class="edit-claim-text" rows="2" style="font-size:0.9em;">{{ c.claim_text }}</textarea>
+                        </label>
+                        <label>
+                            <small>Quote:</small>
+                            <textarea class="edit-quote" rows="2" style="font-size:0.9em;">{{ c.quote_from_transcript or '' }}</textarea>
+                        </label>
+                        <label>
+                            <small>Type:</small>
+                            <select class="edit-type">
+                                {% for t in ['statistic', 'event_date', 'quote_attribution', 'causal', 'medical_science', 'policy_legal', 'study_says', 'biography', 'other'] %}
+                                <option value="{{ t }}" {{ 'selected' if c.claim_type == t else '' }}>{{ t }}</option>
+                                {% endfor %}
+                            </select>
+                        </label>
+                    </div>
+                    {% if c.quote_from_transcript %}
+                    <details style="margin-top:0.3rem;">
+                        <summary><small>Transcript quote</small></summary>
+                        <small style="color:var(--pico-muted-color);">{{ c.quote_from_transcript[:300] }}{% if c.quote_from_transcript|length > 300 %}...{% endif %}</small>
+                    </details>
+                    {% endif %}
+                </td>
+                <td>
+                    <button type="button" class="outline secondary edit-btn"
+                            data-claim-id="{{ c.claim_id }}"
+                            style="padding:0.3em 0.6em; font-size:0.8em;">
+                        Edit
+                    </button>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <div style="display:flex; gap:1rem; margin-top:1rem;">
+        <button type="button" id="submit-review" class="primary">
+            Submit Review &amp; Continue
+        </button>
+        <button type="button" id="keep-all" class="outline">Keep All</button>
+    </div>
+</form>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+    const runId = '{{ run_id }}';
+
+    // Toggle edit panel
+    document.querySelectorAll('.edit-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const cid = this.dataset.claimId;
+            const panel = document.getElementById('edit-' + cid);
+            const showing = panel.style.display !== 'none';
+            panel.style.display = showing ? 'none' : 'block';
+            this.textContent = showing ? 'Edit' : 'Close';
+        });
+    });
+
+    // Keep all
+    document.getElementById('keep-all').addEventListener('click', function() {
+        document.querySelectorAll('.keep-check').forEach(cb => { cb.checked = true; });
+    });
+
+    // Submit review
+    document.getElementById('submit-review').addEventListener('click', function() {
+        const btn = this;
+        btn.disabled = true;
+        btn.setAttribute('aria-busy', 'true');
+
+        const decisions = [];
+        document.querySelectorAll('tr[data-claim-id]').forEach(row => {
+            const claimId = row.dataset.claimId;
+            const kept = row.querySelector('.keep-check').checked;
+            const editPanel = document.getElementById('edit-' + claimId);
+            const isEdited = editPanel.style.display !== 'none';
+
+            if (!kept) {
+                decisions.push({ claim_id: claimId, action: 'drop' });
+            } else if (isEdited) {
+                decisions.push({
+                    claim_id: claimId,
+                    action: 'edit',
+                    claim_text: editPanel.querySelector('.edit-claim-text').value,
+                    quote_from_transcript: editPanel.querySelector('.edit-quote').value,
+                    claim_type: editPanel.querySelector('.edit-type').value,
+                });
+            } else {
+                decisions.push({ claim_id: claimId, action: 'keep' });
+            }
+        });
+
+        fetch('/run/' + runId + '/review', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(decisions),
+        }).then(function() {
+            window.location.href = '/run/' + runId;
+        }).catch(function(err) {
+            alert('Error submitting review: ' + err);
+            btn.disabled = false;
+            btn.removeAttribute('aria-busy');
+        });
+    });
+})();
+</script>
+{% endblock %}

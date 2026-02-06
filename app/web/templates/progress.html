@@ -1,0 +1,392 @@
+{% extends "base.html" %}
+
+{% block title %}Evident — Run {{ run_id }}{% endblock %}
+
+{% block head %}
+<style>
+    .stage-detail {
+        display: none;
+        margin: 0.75rem 0;
+        padding: 0.75rem 1rem;
+        border-radius: 6px;
+        background: var(--pico-card-background-color);
+        border: 1px solid var(--pico-muted-border-color);
+    }
+    .stage-detail.visible { display: block; }
+    .stage-detail h4 {
+        margin: 0 0 0.5rem 0;
+        font-size: 0.95em;
+    }
+    .stage-detail .detail-message {
+        font-size: 0.85em;
+        color: var(--pico-muted-color);
+        margin-bottom: 0.4rem;
+    }
+    .stage-detail progress {
+        width: 100%;
+        height: 1.2rem;
+    }
+    .stage-detail .detail-stats {
+        display: flex;
+        gap: 1.5rem;
+        margin-top: 0.4rem;
+        font-size: 0.85em;
+    }
+    .stage-detail .detail-stats strong {
+        font-size: 1.1em;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<hgroup>
+    <h1>Run: {{ run_id }}</h1>
+    <p>
+        Channel: <strong>{{ runner.channel }}</strong>
+        &mdash;
+        Status: <span id="status-badge" class="badge badge-{{ runner.status }}">{{ runner.status }}</span>
+    </p>
+</hgroup>
+
+<!-- Stage timeline -->
+<h3>Pipeline Stages</h3>
+<div class="stage-timeline" id="stage-timeline">
+    {% for stage in runner.STAGE_ORDER %}
+    <div class="stage-box" id="stage-{{ stage }}"
+         data-stage="{{ stage }}">
+        {{ stage.replace('_', ' ').title() }}
+    </div>
+    {% endfor %}
+</div>
+
+<!-- Extract claims detail panel -->
+<div class="stage-detail" id="extract-detail">
+    <h4>Extracting Claims</h4>
+    <div class="detail-message" id="extract-message">Preparing...</div>
+    <progress id="extract-bar" value="0" max="1"></progress>
+    <div class="detail-stats">
+        <div>Chunk <strong id="extract-chunk">0</strong> / <span id="extract-total">1</span></div>
+        <div>Claims found: <strong id="extract-claims">0</strong></div>
+    </div>
+</div>
+
+<!-- Retrieve evidence detail panel -->
+<div class="stage-detail" id="retrieve-detail">
+    <h4>Retrieving Evidence</h4>
+    <div class="detail-message" id="retrieve-message">Preparing...</div>
+    <progress id="retrieve-bar" value="0" max="1"></progress>
+    <div class="detail-stats">
+        <div>Claim <strong id="retrieve-claim-idx">0</strong> / <span id="retrieve-total">0</span></div>
+        <div>Sources: <strong id="retrieve-sources">0</strong></div>
+        <div>Snippets: <strong id="retrieve-snippets">0</strong></div>
+        <div>Failures: <strong id="retrieve-failures">0</strong></div>
+    </div>
+</div>
+
+<!-- Verify claims detail panel -->
+<div class="stage-detail" id="verify-detail">
+    <h4>Verifying Claims</h4>
+    <div class="detail-message" id="verify-message">Preparing...</div>
+    <progress id="verify-bar" value="0" max="1"></progress>
+    <div class="detail-stats">
+        <div>Verified <strong id="verify-current">0</strong> / <span id="verify-total">0</span></div>
+    </div>
+</div>
+
+<!-- Counters (seeded from manifest so they survive page reloads) -->
+{% set cnts = runner.manifest.get('counts', {}) %}
+<div class="grid" id="counters" style="margin:1rem 0;">
+    <div>
+        <strong id="cnt-claims">{{ cnts.get('claims_kept', 0) }}</strong>
+        <small>Claims</small>
+    </div>
+    <div>
+        <strong id="cnt-sources">{{ cnts.get('sources', 0) }}</strong>
+        <small>Sources</small>
+    </div>
+    <div>
+        <strong id="cnt-snippets">{{ cnts.get('snippets', 0) }}</strong>
+        <small>Snippets</small>
+    </div>
+    <div>
+        <strong id="cnt-verdicts">{{ cnts.get('verdicts', 0) }}</strong>
+        <small>Verdicts</small>
+    </div>
+    <div>
+        <strong id="cnt-failures">{{ cnts.get('fetch_failures', 0) }}</strong>
+        <small>Failures</small>
+    </div>
+</div>
+
+<!-- Log stream -->
+<h3>Log</h3>
+<div class="log-stream" id="log-stream">
+    <div class="log-line">Waiting for events...</div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+    const runId = '{{ run_id }}';
+    const logStream = document.getElementById('log-stream');
+    const statusBadge = document.getElementById('status-badge');
+    let logStarted = false;
+    let completedStages = new Set();
+    let activeStage = null;
+    let sseConnected = false;
+
+    // Detail panel elements
+    const extractDetail = document.getElementById('extract-detail');
+    const retrieveDetail = document.getElementById('retrieve-detail');
+    const verifyDetail = document.getElementById('verify-detail');
+
+    function showPanel(panel) { panel.classList.add('visible'); }
+    function hidePanel(panel) { panel.classList.remove('visible'); }
+
+    function addLog(text) {
+        if (!logStarted) {
+            logStream.innerHTML = '';
+            logStarted = true;
+        }
+        const div = document.createElement('div');
+        div.className = 'log-line';
+        div.textContent = text;
+        logStream.appendChild(div);
+        while (logStream.children.length > 50) {
+            logStream.removeChild(logStream.firstChild);
+        }
+        logStream.scrollTop = logStream.scrollHeight;
+    }
+
+    const source = new EventSource('/run/' + runId + '/events');
+
+    source.onopen = function() {
+        sseConnected = true;
+        console.log('SSE connected');
+    };
+
+    // -- Stage transitions --
+    source.addEventListener('stage', function(e) {
+        const data = JSON.parse(e.data);
+        const el = document.getElementById('stage-' + data.name);
+        if (!el) return;
+
+        if (data.status === 'started') {
+            if (activeStage && activeStage !== data.name) {
+                const prev = document.getElementById('stage-' + activeStage);
+                if (prev) {
+                    prev.classList.remove('active');
+                    prev.classList.add('completed');
+                }
+                completedStages.add(activeStage);
+            }
+            el.classList.add('active');
+            el.classList.remove('completed');
+            activeStage = data.name;
+
+            // Show/hide detail panels based on which stage is active
+            hidePanel(extractDetail);
+            hidePanel(retrieveDetail);
+            hidePanel(verifyDetail);
+            if (data.name === 'extract_claims') showPanel(extractDetail);
+            else if (data.name === 'retrieve_evidence') showPanel(retrieveDetail);
+            else if (data.name === 'verify_claims') showPanel(verifyDetail);
+
+        } else if (data.status === 'completed') {
+            el.classList.remove('active');
+            el.classList.add('completed');
+            completedStages.add(data.name);
+            if (activeStage === data.name) activeStage = null;
+
+            if (data.name === 'extract_claims') hidePanel(extractDetail);
+            if (data.name === 'retrieve_evidence') hidePanel(retrieveDetail);
+            if (data.name === 'verify_claims') hidePanel(verifyDetail);
+        }
+    });
+
+    // -- Extract claims progress --
+    source.addEventListener('extract_progress', function(e) {
+        const d = JSON.parse(e.data);
+
+        // Show panel in case stage event was missed
+        showPanel(extractDetail);
+
+        const bar = document.getElementById('extract-bar');
+        const msg = document.getElementById('extract-message');
+        const chunkEl = document.getElementById('extract-chunk');
+        const totalEl = document.getElementById('extract-total');
+        const claimsEl = document.getElementById('extract-claims');
+
+        bar.max = d.total_chunks || 1;
+        totalEl.textContent = d.total_chunks || 1;
+
+        if (d.claims_so_far !== undefined) {
+            claimsEl.textContent = d.claims_so_far;
+            // Also update the main claims counter during extraction
+            document.getElementById('cnt-claims').textContent = d.claims_so_far;
+        }
+
+        if (d.status === 'starting') {
+            chunkEl.textContent = '0';
+            bar.value = 0;
+            msg.textContent = 'Preparing to extract claims from ' + d.total_chunks + ' chunks...';
+        } else if (d.status === 'extracting') {
+            bar.value = Math.max(0, (d.chunk || 1) - 1);
+            chunkEl.textContent = d.chunk || 1;
+            msg.textContent = 'Analyzing chunk ' + d.chunk + ' of ' + d.total_chunks + '...';
+        } else if (d.status === 'chunk_done') {
+            bar.value = d.chunk;
+            chunkEl.textContent = d.chunk;
+            msg.textContent = 'Chunk ' + d.chunk + ' complete \u2014 ' + (d.chunk_claims || 0) + ' claims found (' + (d.claims_so_far || 0) + ' total)';
+        } else if (d.status === 'done') {
+            bar.value = bar.max;
+            msg.textContent = 'Extraction complete';
+        }
+    });
+
+    // -- Retrieve evidence progress --
+    source.addEventListener('retrieve_progress', function(e) {
+        const d = JSON.parse(e.data);
+
+        // Show panel in case stage event was missed
+        showPanel(retrieveDetail);
+
+        const bar = document.getElementById('retrieve-bar');
+        const msg = document.getElementById('retrieve-message');
+        const idxEl = document.getElementById('retrieve-claim-idx');
+        const totalEl = document.getElementById('retrieve-total');
+        const srcEl = document.getElementById('retrieve-sources');
+        const snipEl = document.getElementById('retrieve-snippets');
+        const failEl = document.getElementById('retrieve-failures');
+
+        bar.max = d.total_claims || 1;
+        totalEl.textContent = d.total_claims || 0;
+        srcEl.textContent = d.sources || 0;
+        snipEl.textContent = d.snippets || 0;
+        failEl.textContent = d.failures || 0;
+
+        // Update main counters
+        document.getElementById('cnt-sources').textContent = d.sources || 0;
+        document.getElementById('cnt-snippets').textContent = d.snippets || 0;
+        document.getElementById('cnt-failures').textContent = d.failures || 0;
+
+        if (d.status === 'searching') {
+            bar.value = Math.max(0, (d.claim_idx || 1) - 1);
+            idxEl.textContent = d.claim_idx || 1;
+            msg.textContent = 'Searching for evidence \u2014 claim ' + d.claim_idx + '/' + d.total_claims + ' (' + d.claim_id + ')...';
+        } else if (d.status === 'done') {
+            bar.value = d.claim_idx;
+            idxEl.textContent = d.claim_idx;
+            msg.textContent = 'Claim ' + d.claim_idx + '/' + d.total_claims + ' done \u2014 ' + (d.claim_sources || 0) + ' snippets matched';
+        }
+    });
+
+    // -- Generic progress events (stage-end summaries) --
+    source.addEventListener('progress', function(e) {
+        const data = JSON.parse(e.data);
+        if (data.claims_extracted !== undefined) {
+            document.getElementById('cnt-claims').textContent = data.claims_extracted;
+        }
+        if (data.sources !== undefined) {
+            document.getElementById('cnt-sources').textContent = data.sources;
+        }
+        if (data.snippets !== undefined) {
+            document.getElementById('cnt-snippets').textContent = data.snippets;
+        }
+        if (data.fetch_failures !== undefined) {
+            document.getElementById('cnt-failures').textContent = data.fetch_failures;
+        }
+    });
+
+    // -- Verify claims progress --
+    source.addEventListener('verify_progress', function(e) {
+        const d = JSON.parse(e.data);
+        const cur = d.current;
+        const tot = d.total;
+
+        // Update global counter
+        document.getElementById('cnt-verdicts').textContent = cur + '/' + tot;
+
+        // Update verify detail panel
+        showPanel(verifyDetail);
+        document.getElementById('verify-bar').max = tot;
+        document.getElementById('verify-bar').value = cur;
+        document.getElementById('verify-current').textContent = cur;
+        document.getElementById('verify-total').textContent = tot;
+        document.getElementById('verify-message').textContent = 'Verified ' + cur + ' of ' + tot + ' claims...';
+    });
+
+    // -- Log messages --
+    source.addEventListener('log', function(e) {
+        const data = JSON.parse(e.data);
+        addLog(data.message);
+    });
+
+    // -- Status changes --
+    source.addEventListener('status', function(e) {
+        const data = JSON.parse(e.data);
+        statusBadge.textContent = data.status;
+        statusBadge.className = 'badge badge-' + data.status;
+    });
+
+    // -- Review pause --
+    source.addEventListener('review_ready', function(e) {
+        window.location.href = '/run/' + runId + '/review';
+    });
+
+    // -- Pipeline complete --
+    source.addEventListener('done', function(e) {
+        const data = JSON.parse(e.data);
+        source.close();
+        statusBadge.textContent = 'done';
+        statusBadge.className = 'badge badge-done';
+
+        hidePanel(extractDetail);
+        hidePanel(retrieveDetail);
+        hidePanel(verifyDetail);
+
+        document.querySelectorAll('.stage-box.active').forEach(function(el) {
+            el.classList.remove('active');
+            el.classList.add('completed');
+        });
+
+        if (data.status === 'ok') {
+            addLog('Run complete! Redirecting to report...');
+            setTimeout(function() {
+                window.location.href = '/run/' + runId + '/report';
+            }, 2000);
+        } else {
+            addLog('Run ended: ' + (data.message || data.status));
+        }
+    });
+
+    // -- Pipeline error --
+    source.addEventListener('error', function(e) {
+        // EventSource fires 'error' for both connection issues and server-sent error events
+        let msg = 'Connection error';
+        try {
+            const data = JSON.parse(e.data);
+            msg = data.message || msg;
+            // This is a server-sent error event
+            statusBadge.textContent = 'error';
+            statusBadge.className = 'badge badge-error';
+            hidePanel(extractDetail);
+            hidePanel(retrieveDetail);
+            hidePanel(verifyDetail);
+            addLog('ERROR: ' + msg);
+            source.close();
+        } catch(_) {
+            // This is a connection error from EventSource itself
+            // Don't close — EventSource will auto-reconnect
+            console.log('SSE connection error, will retry...');
+        }
+    });
+
+    // -- Stream end --
+    source.addEventListener('stream_end', function(e) {
+        source.close();
+    });
+})();
+</script>
+{% endblock %}

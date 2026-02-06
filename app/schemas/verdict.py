@@ -2,7 +2,7 @@
 from pydantic import BaseModel, Field
 from typing import List, Literal, Optional
 
-Rating = Literal["VERIFIED", "LIKELY TRUE", "UNCERTAIN", "LIKELY FALSE", "FALSE"]
+Rating = Literal["VERIFIED", "LIKELY TRUE", "INSUFFICIENT EVIDENCE", "CONFLICTING EVIDENCE", "LIKELY FALSE", "FALSE"]
 Severity = Literal["high", "medium", "low"]
 
 class Citation(BaseModel):

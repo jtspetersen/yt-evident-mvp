@@ -8,7 +8,7 @@ A local fact-checking pipeline for analyzing video transcripts and verifying cla
 - **Claim extraction** - Overlapping chunks prevent missing claims at segment boundaries
 - **Evidence retrieval** - 6-tier quality system prioritizes scholarly sources over forums/blogs
 - **Claim verification** - LLM reasoning with citations, confidence scoring, and rhetorical analysis
-- **Report generation** - Detailed verdicts, 0-100 truthfulness score, and video script outline
+- **Report generation** - Detailed verdicts with verdict count summaries, and video script outline
 
 ## Quick Start
 
@@ -39,6 +39,30 @@ docker compose -f docker/docker-compose.yml up -d
 docker compose -f docker/docker-compose.yml run --rm app python -m app.main --infile inbox/transcript.txt
 ```
 
+### Option 3: Web UI
+
+A browser-based interface for uploading transcripts, monitoring progress in real time, reviewing claims, and viewing reports.
+
+```bash
+# Start the web server
+python -m app.web.server
+
+# Or via Make
+make web
+```
+
+Then open **http://localhost:8000** in your browser.
+
+**Web UI features:**
+- Upload transcripts via drag-and-drop or file picker
+- Real-time progress dashboard with per-stage progress bars (extract, retrieve, verify)
+- Live counters for claims, sources, snippets, and failures
+- Optional claim review step — edit or drop claims before verification
+- Rendered report with verdict summary badges and artifact downloads
+- Past runs history
+
+The web UI uses the same pipeline as the CLI. No additional services are required beyond Ollama and SearXNG.
+
 ## Project Structure
 
 ```
@@ -48,7 +72,12 @@ evident-video-fact-checker/
 │   ├── pipeline/           # Processing stages
 │   ├── schemas/            # Pydantic models
 │   ├── store/              # Store modules
-│   └── tools/              # Utilities (fetch, parse, ollama)
+│   ├── tools/              # Utilities (fetch, parse, ollama)
+│   └── web/                # Web UI (FastAPI + HTMX)
+│       ├── server.py       # Routes and SSE endpoint
+│       ├── runner.py       # Background pipeline runner
+│       ├── templates/      # Jinja2 HTML templates
+│       └── static/         # Vendored CSS/JS (Pico.css, HTMX)
 ├── docker/                 # Docker configuration
 │   ├── docker-compose.yml
 │   ├── docker-compose.gpu.yml      # NVIDIA GPU override
@@ -120,6 +149,19 @@ budgets:
   max_fetches_per_run: 80
 ```
 
+### Verdict Ratings
+
+Each claim receives one of six ratings:
+
+| Rating | Meaning |
+|--------|---------|
+| VERIFIED | Confirmed by strong evidence |
+| LIKELY TRUE | Supported but not fully confirmed |
+| INSUFFICIENT EVIDENCE | Not enough quality sources found |
+| CONFLICTING EVIDENCE | Credible sources disagree |
+| LIKELY FALSE | Evidence suggests the claim is wrong |
+| FALSE | Clearly contradicted by strong evidence |
+
 ### Source Quality Tiers
 
 The pipeline uses a 6-tier source quality system:
@@ -145,8 +187,8 @@ runs/YYYYMMDD_HHMMSS__channel__video_title/
 ├── 03_sources.json                 # Retrieved evidence
 ├── 04_snippets.json                # Evidence snippets
 ├── 05_verdicts.json                # Verification results
-├── 06_scorecard.md                 # Summary (0-100 score)
-├── 07_08_review_outline_and_script.md  # Video script
+├── 06_scorecard.md                 # Verdict counts and source tiers
+├── 07_summary.md                      # Video script
 ├── run.json                        # Run metadata
 └── run.log                         # Execution log
 ```
@@ -172,6 +214,7 @@ runs/YYYYMMDD_HHMMSS__channel__video_title/
 ```bash
 make help              # Show all commands
 make setup             # Run setup wizard
+make web               # Start web UI at http://localhost:8000
 make runvid ARGS='...' # Run natively (recommended)
 make start             # Start Docker services
 make stop              # Stop Docker services

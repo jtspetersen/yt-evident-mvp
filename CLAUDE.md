@@ -84,7 +84,7 @@ All config lives in `config.yaml`:
 ## Output
 
 Each run creates a timestamped directory in `runs/` with numbered artifacts:
-`00_transcript.raw.txt` through `07_08_review_outline_and_script.md`, plus `run.json` manifest and `run.log`.
+`00_transcript.raw.txt` through `07_summary.md`, plus `run.json` manifest and `run.log`.
 
 ## Development Notes
 

@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+
+{% block title %}Evident — New Fact-Check Run{% endblock %}
+
+{% block content %}
+<hgroup>
+    <h1>New Fact-Check Run</h1>
+    <p>Upload a transcript to begin fact-checking.</p>
+</hgroup>
+
+<form action="/upload" method="post" enctype="multipart/form-data" id="upload-form">
+    <!-- Drop zone -->
+    <div class="drop-zone" id="drop-zone" onclick="document.getElementById('file-input').click()">
+        <p><strong>Drag &amp; drop a transcript file here</strong></p>
+        <p><small>or click to browse (.txt, .md)</small></p>
+        <input type="file" name="transcript" id="file-input" accept=".txt,.md" required>
+        <p id="file-name" style="display:none; margin-top:0.5rem;"></p>
+    </div>
+
+    <!-- Channel name -->
+    <label for="channel" style="margin-top:1rem;">
+        Channel / Creator Name
+        <input type="text" name="channel" id="channel"
+               placeholder="Auto-inferred from filename if left blank">
+    </label>
+
+    <!-- Options -->
+    <fieldset>
+        <legend>Options</legend>
+        <label>
+            <input type="checkbox" name="review" value="true">
+            Enable claim review (pause pipeline to review/edit extracted claims)
+        </label>
+    </fieldset>
+
+    <!-- Submit -->
+    <button type="submit" id="submit-btn">Start Fact-Check</button>
+</form>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+    const dropZone = document.getElementById('drop-zone');
+    const fileInput = document.getElementById('file-input');
+    const fileName = document.getElementById('file-name');
+    const submitBtn = document.getElementById('submit-btn');
+
+    // Drag & drop
+    ['dragenter', 'dragover'].forEach(evt => {
+        dropZone.addEventListener(evt, e => {
+            e.preventDefault();
+            dropZone.classList.add('dragover');
+        });
+    });
+    ['dragleave', 'drop'].forEach(evt => {
+        dropZone.addEventListener(evt, e => {
+            e.preventDefault();
+            dropZone.classList.remove('dragover');
+        });
+    });
+    dropZone.addEventListener('drop', e => {
+        const files = e.dataTransfer.files;
+        if (files.length > 0) {
+            fileInput.files = files;
+            showFileName(files[0].name);
+        }
+    });
+
+    // File picker
+    fileInput.addEventListener('change', () => {
+        if (fileInput.files.length > 0) {
+            showFileName(fileInput.files[0].name);
+        }
+    });
+
+    function showFileName(name) {
+        fileName.textContent = 'Selected: ' + name;
+        fileName.style.display = 'block';
+    }
+
+    // Prevent double submit
+    document.getElementById('upload-form').addEventListener('submit', () => {
+        submitBtn.disabled = true;
+        submitBtn.setAttribute('aria-busy', 'true');
+        submitBtn.textContent = 'Starting...';
+    });
+})();
+</script>
+{% endblock %}

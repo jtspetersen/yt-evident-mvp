@@ -21,7 +21,8 @@ Red flags to detect and report:
 Allowed claim ratings ONLY:
 - VERIFIED
 - LIKELY TRUE
-- UNCERTAIN
+- INSUFFICIENT EVIDENCE
+- CONFLICTING EVIDENCE
 - LIKELY FALSE
 - FALSE
 

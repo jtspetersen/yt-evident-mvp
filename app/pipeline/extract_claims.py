@@ -179,14 +179,20 @@ def _deduplicate_claims(claims_data: list) -> list:
 
     return unique_claims
 
-def extract_claims(ollama_base: str, model: str, transcript_json: dict, max_claims: int = 50, temperature: float = 0.1, chunk_size: int = 20, chunk_overlap: int = 5) -> List[Claim]:
+def extract_claims(ollama_base: str, model: str, transcript_json: dict, max_claims: int = 50, temperature: float = 0.1, chunk_size: int = 20, chunk_overlap: int = 5, progress_callback=None) -> List[Claim]:
     import sys
     import os
+
+    def _cb(data):
+        if progress_callback:
+            progress_callback(data)
 
     segments = transcript_json.get("segments", [])
 
     # If transcript is small, process as single chunk
     if len(segments) <= chunk_size:
+        _cb({"chunk": 1, "total_chunks": 1, "status": "extracting", "claims_so_far": 0})
+
         # Original single-pass logic
         user_prompt = json.dumps(transcript_json, ensure_ascii=False)
         user_with_instruction = f"{user_prompt}\n\nIMPORTANT: Return a JSON array with MULTIPLE claims (not just one). Review ALL segments and extract EVERY checkable factual claim. Make each claim COMPLETE and SELF-CONTAINED - if a claim mentions a number or percentage, include what it refers to by using surrounding context. COMBINE claims that form a single causal or conditional argument (like 'Without X then Y') into ONE compound claim."
@@ -195,6 +201,8 @@ def extract_claims(ollama_base: str, model: str, transcript_json: dict, max_clai
             print(f"DEBUG: Sending {len(user_prompt)} chars, {len(segments)} segments to {model}", file=sys.stderr)
 
         raw = ollama_chat(ollama_base, model, SYSTEM, user_with_instruction, temperature=temperature, force_json=False, num_predict=8192, show_progress=True)
+
+        _cb({"chunk": 1, "total_chunks": 1, "status": "done"})
     else:
         # Chunk-based extraction for larger transcripts with overlapping chunks
         if _should_log("INFO"):
@@ -203,6 +211,8 @@ def extract_claims(ollama_base: str, model: str, transcript_json: dict, max_clai
         all_claims_data = []
         chunk_step = chunk_size - chunk_overlap  # How far to advance for each chunk
         num_chunks = (len(segments) - chunk_overlap + chunk_step - 1) // chunk_step
+
+        _cb({"chunk": 0, "total_chunks": num_chunks, "status": "starting", "claims_so_far": 0})
 
         for i in range(num_chunks):
             # Calculate start with overlap from previous chunk
@@ -213,6 +223,8 @@ def extract_claims(ollama_base: str, model: str, transcript_json: dict, max_clai
             if start_idx >= len(segments):
                 break
 
+            _cb({"chunk": i + 1, "total_chunks": num_chunks, "status": "extracting", "claims_so_far": len(all_claims_data)})
+
             chunk_segments = segments[start_idx:end_idx]
 
             chunk_json = {
@@ -222,6 +234,8 @@ def extract_claims(ollama_base: str, model: str, transcript_json: dict, max_clai
 
             chunk_claims = _extract_from_chunk(ollama_base, model, chunk_json, temperature)
             all_claims_data.extend(chunk_claims)
+
+            _cb({"chunk": i + 1, "total_chunks": num_chunks, "status": "chunk_done", "claims_so_far": len(all_claims_data), "chunk_claims": len(chunk_claims)})
 
             if _should_log("INFO"):
                 print(f"INFO: Chunk {i+1}/{num_chunks} (segments {start_idx}-{end_idx-1}): extracted {len(chunk_claims)} claims", file=sys.stderr)

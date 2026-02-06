@@ -26,9 +26,6 @@ def rollup_by_channel(events):
 
 def summarize_channel(events_for_channel: list, recent_n: int = 5):
     runs = len(events_for_channel)
-    scores = [e.get("overall_score") for e in events_for_channel if isinstance(e.get("overall_score"), (int, float))]
-    avg_score = (sum(scores) / len(scores)) if scores else None
-
     red_flag_counter = Counter()
     topic_counter = Counter()
     verdict_counter = Counter()
@@ -56,7 +53,6 @@ def summarize_channel(events_for_channel: list, recent_n: int = 5):
 
     return {
         "runs": runs,
-        "avg_score": avg_score,
         "top_red_flags": red_flag_counter.most_common(8),
         "top_topics": topic_counter.most_common(8),
         "verdict_totals": dict(verdict_counter),
@@ -64,7 +60,6 @@ def summarize_channel(events_for_channel: list, recent_n: int = 5):
             {
                 "timestamp": r.get("timestamp"),
                 "run_id": r.get("run_id"),
-                "overall_score": r.get("overall_score"),
                 "input_file": r.get("input_file"),
                 "outdir": r.get("outdir"),
             } for r in recent

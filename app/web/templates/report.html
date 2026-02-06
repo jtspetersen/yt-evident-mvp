@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+
+{% block title %}Evident — Report ({{ run_id }}){% endblock %}
+
+{% block content %}
+<hgroup>
+    <h1>Fact-Check Report</h1>
+    <p>Run <strong>{{ run_id }}</strong></p>
+</hgroup>
+
+<!-- Verdict summary -->
+{% if scorecard %}
+<div style="display:flex; align-items:center; gap:1rem; flex-wrap:wrap; margin-bottom:1.5rem; padding:1rem; border-radius:8px; background:var(--pico-card-background-color);">
+    {% set vc = scorecard.get('verdict_counts', {}) %}
+    {% for rating in ['VERIFIED', 'LIKELY TRUE', 'INSUFFICIENT EVIDENCE', 'CONFLICTING EVIDENCE', 'LIKELY FALSE', 'FALSE'] %}
+        {% set count = vc.get(rating, 0) %}
+        {% if count > 0 %}
+        <span class="badge badge-{{ rating.lower().replace(' ', '-') }}" style="margin-right:0.3rem;">
+            {{ rating }}: {{ count }}
+        </span>
+        {% endif %}
+    {% endfor %}
+</div>
+{% endif %}
+
+<!-- Download links -->
+<details style="margin-bottom:1rem;">
+    <summary>Download Artifacts</summary>
+    <div style="display:flex; gap:0.5rem; flex-wrap:wrap; margin-top:0.5rem;">
+        {% set artifacts = manifest.get('artifacts', {}) %}
+        {% if artifacts.get('writer_md') %}
+        <a href="/run/{{ run_id }}/artifact/{{ artifacts.writer_md }}" role="button" class="outline" style="font-size:0.85em;">
+            Report (.md)
+        </a>
+        {% endif %}
+        {% if artifacts.get('verdicts') %}
+        <a href="/run/{{ run_id }}/artifact/{{ artifacts.verdicts }}" role="button" class="outline" style="font-size:0.85em;">
+            Verdicts (.json)
+        </a>
+        {% endif %}
+        {% if artifacts.get('sources') %}
+        <a href="/run/{{ run_id }}/artifact/{{ artifacts.sources }}" role="button" class="outline" style="font-size:0.85em;">
+            Sources (.json)
+        </a>
+        {% endif %}
+        {% if artifacts.get('scorecard_md') %}
+        <a href="/run/{{ run_id }}/artifact/{{ artifacts.scorecard_md }}" role="button" class="outline" style="font-size:0.85em;">
+            Scorecard (.md)
+        </a>
+        {% endif %}
+        {% if artifacts.get('claims') %}
+        <a href="/run/{{ run_id }}/artifact/{{ artifacts.claims }}" role="button" class="outline" style="font-size:0.85em;">
+            Claims (.json)
+        </a>
+        {% endif %}
+        <a href="/run/{{ run_id }}/artifact/run.json" role="button" class="outline" style="font-size:0.85em;">
+            Manifest (.json)
+        </a>
+    </div>
+</details>
+
+<!-- Rendered report -->
+<article class="report-content">
+    {{ report_html | safe }}
+</article>
+
+<!-- Navigation -->
+<div style="margin-top:2rem; display:flex; gap:1rem;">
+    <a href="/" role="button" class="outline">New Run</a>
+    <a href="/runs" role="button" class="outline secondary">Past Runs</a>
+</div>
+{% endblock %}

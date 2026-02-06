@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+
+{% block title %}Evident — Past Runs{% endblock %}
+
+{% block content %}
+<hgroup>
+    <h1>Past Runs</h1>
+    <p>{{ runs|length }} run{{ 's' if runs|length != 1 else '' }} recorded.</p>
+</hgroup>
+
+{% if runs %}
+<table>
+    <thead>
+        <tr>
+            <th>Date</th>
+            <th>Run ID</th>
+            <th>Verdicts</th>
+            <th>Duration</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for r in runs %}
+        <tr>
+            <td><small>{{ r.get('timestamp', '')[:19] }}</small></td>
+            <td><code>{{ r.get('run_id', '?') }}</code></td>
+            <td>
+                {% set vc = r.get('verdict_counts', {}) %}
+                {% for rating in ['VERIFIED', 'LIKELY TRUE', 'INSUFFICIENT EVIDENCE', 'CONFLICTING EVIDENCE', 'LIKELY FALSE', 'FALSE'] %}
+                    {% set count = vc.get(rating, 0) %}
+                    {% if count > 0 %}
+                    <span class="badge badge-{{ rating.lower().replace(' ', '-') }}" style="font-size:0.7em; margin-right:2px;">
+                        {{ rating[:3] }}:{{ count }}
+                    </span>
+                    {% endif %}
+                {% endfor %}
+            </td>
+            <td><small>{{ '%.0f' % r.get('duration_sec', 0) }}s</small></td>
+            <td>
+                <a href="/run/{{ r.get('run_id', '') }}/report" role="button" class="outline" style="padding:0.3em 0.6em; font-size:0.8em;">
+                    View
+                </a>
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p>No runs recorded yet. <a href="/">Start a new run</a> to begin.</p>
+{% endif %}
+{% endblock %}

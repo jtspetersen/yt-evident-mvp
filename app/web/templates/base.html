@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Evident Fact Checker{% endblock %}</title>
+    <link rel="stylesheet" href="/static/pico.min.css">
+    <script src="/static/htmx.min.js"></script>
+    <style>
+        /* Custom overrides */
+        :root {
+            --pico-font-family-sans-serif: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        }
+        nav .brand {
+            font-weight: 700;
+            font-size: 1.2rem;
+        }
+        .badge {
+            display: inline-block;
+            padding: 0.15em 0.5em;
+            border-radius: 4px;
+            font-size: 0.85em;
+            font-weight: 600;
+        }
+        .badge-verified { background: #2e7d32; color: #fff; }
+        .badge-likely-true { background: #558b2f; color: #fff; }
+        .badge-insufficient-evidence { background: #f9a825; color: #000; }
+        .badge-conflicting-evidence { background: #ff8f00; color: #000; }
+        .badge-likely-false { background: #e65100; color: #fff; }
+        .badge-false { background: #c62828; color: #fff; }
+        .badge-running { background: #1565c0; color: #fff; }
+        .badge-review { background: #6a1b9a; color: #fff; }
+        .badge-done { background: #2e7d32; color: #fff; }
+        .badge-error { background: #c62828; color: #fff; }
+        .badge-pending { background: #757575; color: #fff; }
+
+        /* Stage timeline */
+        .stage-timeline {
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+            margin: 1rem 0;
+        }
+        .stage-box {
+            padding: 0.4em 0.8em;
+            border-radius: 6px;
+            font-size: 0.8em;
+            background: var(--pico-muted-border-color);
+            color: var(--pico-muted-color);
+            white-space: nowrap;
+        }
+        .stage-box.active {
+            background: #1565c0;
+            color: #fff;
+            animation: pulse 1.5s ease-in-out infinite;
+        }
+        .stage-box.completed {
+            background: #2e7d32;
+            color: #fff;
+        }
+        .stage-box.skipped {
+            opacity: 0.5;
+            text-decoration: line-through;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+
+        /* Log stream */
+        .log-stream {
+            max-height: 400px;
+            overflow-y: auto;
+            background: var(--pico-code-background-color);
+            padding: 0.75rem;
+            border-radius: 6px;
+            font-family: monospace;
+            font-size: 0.8em;
+            line-height: 1.6;
+        }
+        .log-stream .log-line {
+            border-bottom: 1px solid var(--pico-muted-border-color);
+            padding: 2px 0;
+        }
+
+        /* Drop zone */
+        .drop-zone {
+            border: 2px dashed var(--pico-muted-border-color);
+            border-radius: 8px;
+            padding: 2rem;
+            text-align: center;
+            cursor: pointer;
+            transition: border-color 0.2s, background 0.2s;
+        }
+        .drop-zone:hover, .drop-zone.dragover {
+            border-color: var(--pico-primary);
+            background: var(--pico-primary-focus);
+        }
+        .drop-zone input[type="file"] {
+            display: none;
+        }
+
+        /* Report content */
+        .report-content h1 { font-size: 1.6rem; margin-top: 1.5rem; }
+        .report-content h2 { font-size: 1.3rem; margin-top: 1.3rem; }
+        .report-content h3 { font-size: 1.1rem; margin-top: 1rem; }
+        .report-content table { font-size: 0.9em; }
+        .report-content blockquote {
+            border-left: 3px solid var(--pico-primary);
+            padding-left: 1rem;
+            font-style: italic;
+        }
+
+        footer { margin-top: 2rem; text-align: center; font-size: 0.85em; }
+    </style>
+    {% block head %}{% endblock %}
+</head>
+<body>
+    <nav class="container-fluid">
+        <ul>
+            <li><a href="/" class="brand">Evident</a></li>
+        </ul>
+        <ul>
+            <li><a href="/">New Run</a></li>
+            <li><a href="/runs">Past Runs</a></li>
+        </ul>
+    </nav>
+
+    <main class="container">
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer class="container">
+        <small>Evident Video Fact Checker &mdash; Local Pipeline</small>
+    </footer>
+
+    {% block scripts %}{% endblock %}
+</body>
+</html>
