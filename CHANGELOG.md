@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-02-05
+
+### Added
+- **Web UI**: Browser-based interface for running the full pipeline without the command line (FastAPI + HTMX + Jinja2 + Pico.css, all vendored — no CDN or npm required).
+  - Upload transcripts via drag-and-drop or file picker
+  - Real-time progress dashboard with per-stage progress bars and live counters (claims, sources, snippets, failures) via Server-Sent Events
+  - Claim review step — edit or drop claims before verification
+  - Rendered report page with verdict summary badges and artifact downloads
+  - Past runs history page
+- **Docker support**: Full Docker setup with `docker-compose.yml`, GPU overrides for NVIDIA and AMD, and interactive setup wizard (`setup.py`).
+- **Project roadmap**: `ROADMAP.md` covering extraction quality, verification efficiency, and summary template improvements.
+
+### Changed
+- **Verdict ratings**: Replaced the single `UNCERTAIN` rating with two distinct ratings:
+  - `INSUFFICIENT EVIDENCE` — not enough quality sources found to evaluate the claim
+  - `CONFLICTING EVIDENCE` — credible sources disagree with each other
+- **Score removal**: Removed the numerical 0-100 truthfulness score. Reports now show verdict count badges instead.
+- **Output artifact**: Renamed `07_08_review_outline_and_script.md` to `07_summary.md`.
+- **Parallel processing**: `ThreadPoolExecutor` for evidence fetching (8 workers) and verification (3 workers) with thread-safe fetch stats.
+- **Session pooling**: HTTP session reuse for fetch and search requests.
+
+### Removed
+- `runvid` / `runvid.bat` scripts (replaced by `run.sh` and `make` commands)
+- Numerical truthfulness score from scorecard, reports, and creator profiles
+
 ## [0.2.0] - 2026-02-05
 
 ### Fixed
