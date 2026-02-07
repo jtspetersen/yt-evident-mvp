@@ -78,7 +78,7 @@ def _fetch_captions(video_id: str, languages=None) -> str | None:
     """Try to get YouTube captions via youtube-transcript-api.
 
     Prefers manually created > auto-generated, English variants.
-    Returns plain text joined by newlines, or None.
+    Returns timestamped text (M:SS format) joined by newlines, or None.
     """
     languages = languages or ["en", "en-US", "en-GB"]
     try:
@@ -88,38 +88,30 @@ def _fetch_captions(video_id: str, languages=None) -> str | None:
             NoTranscriptFound,
         )
 
-        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        api = YouTubeTranscriptApi()
+        transcript_list = api.list(video_id)
 
-        transcript = None
-        # Prefer manually created
-        for lang in languages:
-            try:
-                transcript = transcript_list.find_manually_created_transcript([lang])
-                break
-            except Exception:
-                pass
+        # Sort: prefer manually created over auto-generated,
+        # and prefer matching language codes
+        manual = []
+        generated = []
+        for t in transcript_list:
+            if t.language_code in languages:
+                if t.is_generated:
+                    generated.append(t)
+                else:
+                    manual.append(t)
 
-        # Then auto-generated
-        if transcript is None:
-            for lang in languages:
-                try:
-                    transcript = transcript_list.find_generated_transcript([lang])
-                    break
-                except Exception:
-                    pass
+        # Pick best: manual first, then generated
+        chosen = (manual or generated or [None])[0]
+        if chosen is None:
+            return None
 
-        # Last resort
-        if transcript is None:
-            try:
-                transcript = transcript_list.find_transcript(languages)
-            except Exception:
-                return None
-
-        items = transcript.fetch()
+        fetched = chosen.fetch()
         lines = []
-        for item in items:
-            ts = _fmt_timestamp(item.get("start", 0))
-            lines.append(f"{ts} {item['text']}")
+        for snippet in fetched.snippets:
+            ts = _fmt_timestamp(snippet.start)
+            lines.append(f"{ts} {snippet.text}")
         return "\n".join(lines)
 
     except (TranscriptsDisabled, NoTranscriptFound):
