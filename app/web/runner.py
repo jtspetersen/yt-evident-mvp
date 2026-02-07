@@ -413,6 +413,8 @@ class PipelineRunner:
                         os.rename(self.outdir, new_outdir)
                         self.outdir = new_outdir
                         self.manifest["outdir"] = new_outdir
+                        # Update logger path to match renamed directory
+                        log.logfile_path = os.path.join(new_outdir, "run.log")
                     except OSError:
                         pass  # Keep original if rename fails
 
