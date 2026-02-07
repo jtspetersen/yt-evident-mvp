@@ -4,7 +4,7 @@ A local fact-checking pipeline for analyzing video transcripts and verifying cla
 
 ## Features
 
-- **Transcript ingestion** - Handles fragmented YouTube transcripts with speaker detection
+- **Transcript ingestion** - Upload a file or paste a YouTube URL; auto-fetches captions or transcribes locally with Whisper
 - **Claim extraction** - Overlapping chunks prevent missing claims at segment boundaries
 - **Evidence retrieval** - 6-tier quality system prioritizes scholarly sources over forums/blogs
 - **Claim verification** - LLM reasoning with citations, confidence scoring, and rhetorical analysis
@@ -18,12 +18,20 @@ A local fact-checking pipeline for analyzing video transcripts and verifying cla
 # 1. Install dependencies
 pip install -r Requirements.txt
 
-# 2. Ensure services are running:
+# 2. Install FFmpeg (required for YouTube Whisper fallback)
+#    Windows: winget install Gyan.FFmpeg
+#    Linux:   sudo apt install ffmpeg
+#    macOS:   brew install ffmpeg
+
+# 3. Ensure services are running:
 #    - Ollama (with GPU): ollama serve
 #    - SearXNG: docker compose -f docker/docker-compose.yml up -d searxng redis
 
-# 3. Run the pipeline
-./run.sh --infile "inbox/transcript.txt" --channel "Channel Name"
+# 4. Run the pipeline
+python -m app.main --infile "inbox/transcript.txt" --channel "Channel Name"
+
+# Or from a YouTube URL
+python -m app.main --url "https://www.youtube.com/watch?v=VIDEO_ID"
 ```
 
 ### Option 2: Full Docker Setup
@@ -41,7 +49,7 @@ docker compose -f docker/docker-compose.yml run --rm app python -m app.main --in
 
 ### Option 3: Web UI
 
-A browser-based interface for uploading transcripts, monitoring progress in real time, reviewing claims, and viewing reports.
+A browser-based interface for uploading transcripts or pasting YouTube URLs, monitoring progress in real time, reviewing claims, and viewing reports.
 
 ```bash
 # Start the web server
@@ -54,8 +62,8 @@ make web
 Then open **http://localhost:8000** in your browser.
 
 **Web UI features:**
-- Upload transcripts via drag-and-drop or file picker
-- Real-time progress dashboard with per-stage progress bars (extract, retrieve, verify)
+- Upload transcripts via drag-and-drop or paste a YouTube URL
+- Real-time progress dashboard with per-stage progress bars (fetch, extract, retrieve, verify)
 - Live counters for claims, sources, snippets, and failures
 - Optional claim review step — edit or drop claims before verification
 - Rendered report with verdict summary badges and artifact downloads
@@ -72,7 +80,7 @@ evident-video-fact-checker/
 │   ├── pipeline/           # Processing stages
 │   ├── schemas/            # Pydantic models
 │   ├── store/              # Store modules
-│   ├── tools/              # Utilities (fetch, parse, ollama)
+│   ├── tools/              # Utilities (fetch, parse, ollama, youtube)
 │   └── web/                # Web UI (FastAPI + HTMX)
 │       ├── server.py       # Routes and SSE endpoint
 │       ├── runner.py       # Background pipeline runner
@@ -102,7 +110,8 @@ evident-video-fact-checker/
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--infile <path>` | Path to transcript file | Newest in `inbox/` |
-| `--channel <name>` | Channel/creator name | Inferred from filename |
+| `--url <youtube-url>` | YouTube video URL (alternative to `--infile`) | — |
+| `--channel <name>` | Channel/creator name | Inferred from filename or YouTube metadata |
 | `--review` | Interactive claim review mode | Disabled |
 | `--verbose` | Show DEBUG output | Disabled |
 | `--quiet` | Errors/warnings only | Disabled |
@@ -110,14 +119,14 @@ evident-video-fact-checker/
 ### Examples
 
 ```bash
-# Native execution (recommended for Windows with GPU)
-./run.sh --infile "inbox/transcript.txt" --channel "Channel Name"
+# From a transcript file
+python -m app.main --infile "inbox/transcript.txt" --channel "Channel Name"
+
+# From a YouTube URL (auto-fetches captions or transcribes with Whisper)
+python -m app.main --url "https://www.youtube.com/watch?v=VIDEO_ID"
 
 # With interactive review
-./run.sh --infile "inbox/transcript.txt" --review --verbose
-
-# Direct Python
-python -m app.main --infile "inbox/transcript.txt" --channel "Channel Name"
+python -m app.main --infile "inbox/transcript.txt" --review --verbose
 ```
 
 ## Configuration
@@ -199,6 +208,7 @@ runs/YYYYMMDD_HHMMSS__channel__video_title/
 - **Ollama** - Local LLM server (GPU recommended)
 - **SearXNG** - Metasearch engine for evidence retrieval
 - **Redis** - For SearXNG caching
+- **FFmpeg** - Required for YouTube Whisper fallback (`winget install Gyan.FFmpeg` / `apt install ffmpeg` / `brew install ffmpeg`)
 
 ### Hardware Recommendations
 

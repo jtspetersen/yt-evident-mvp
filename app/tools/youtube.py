@@ -5,7 +5,11 @@ YouTube transcript fetching with local Whisper fallback.
 Fetches existing YouTube captions when available, falls back to
 downloading audio and transcribing locally with faster-whisper.
 """
+import glob
+import os
 import re
+import shutil
+import sys
 import tempfile
 from pathlib import Path
 
@@ -112,6 +116,54 @@ def _fetch_captions(video_id: str, languages=None) -> str | None:
         return None
 
 
+def _find_ffmpeg() -> str | None:
+    """Find ffmpeg binary, searching PATH and common install locations.
+
+    Returns the directory containing ffmpeg/ffprobe, or None.
+    """
+    # Check PATH first
+    if shutil.which("ffmpeg"):
+        return None  # yt-dlp will find it via PATH
+
+    search_dirs: list[str] = []
+
+    if sys.platform == "win32":
+        # winget installs to AppData\Local\Microsoft\WinGet\Packages\
+        local_appdata = os.environ.get("LOCALAPPDATA", "")
+        if local_appdata:
+            winget_pkgs = os.path.join(local_appdata, "Microsoft", "WinGet", "Packages")
+            # Glob for Gyan.FFmpeg_* packages
+            ffmpeg_globs = glob.glob(
+                os.path.join(winget_pkgs, "Gyan.FFmpeg*", "ffmpeg-*", "bin")
+            )
+            search_dirs.extend(ffmpeg_globs)
+
+        # Common Windows install paths
+        for pf in [os.environ.get("ProgramFiles", ""), os.environ.get("ProgramFiles(x86)", "")]:
+            if pf:
+                search_dirs.append(os.path.join(pf, "ffmpeg", "bin"))
+
+        # Chocolatey
+        choco = os.environ.get("ChocolateyInstall", r"C:\ProgramData\chocolatey")
+        search_dirs.append(os.path.join(choco, "bin"))
+
+        # Scoop
+        userprofile = os.environ.get("USERPROFILE", "")
+        if userprofile:
+            search_dirs.append(os.path.join(userprofile, "scoop", "shims"))
+
+    else:
+        # Linux / macOS common paths
+        search_dirs.extend(["/usr/bin", "/usr/local/bin", "/opt/homebrew/bin"])
+
+    for d in search_dirs:
+        ffmpeg_name = "ffmpeg.exe" if sys.platform == "win32" else "ffmpeg"
+        if os.path.isfile(os.path.join(d, ffmpeg_name)):
+            return d
+
+    return None
+
+
 def _download_and_transcribe(url: str, progress_callback=None) -> str:
     """Download audio via yt-dlp, transcribe with faster-whisper.
 
@@ -142,6 +194,9 @@ def _download_and_transcribe(url: str, progress_callback=None) -> str:
                 }
             ],
         }
+        ffmpeg_dir = _find_ffmpeg()
+        if ffmpeg_dir:
+            ydl_opts["ffmpeg_location"] = ffmpeg_dir
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
 

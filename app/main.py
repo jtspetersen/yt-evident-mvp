@@ -381,7 +381,7 @@ def main():
 
         "channel": {
             "raw": channel,
-            "inferred": inferred_channel,
+            "inferred": channel,
             "slug": channel_slug,
         },
         "transcript": {

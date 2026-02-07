@@ -13,7 +13,9 @@ Evident Video Fact Checker is a Python-based fact-checking pipeline for YouTube 
 - **Config:** PyYAML
 - **LLM backend:** Ollama (local, accessed via REST API)
 - **Search backend:** SearX (local metasearch instance)
-- **No web framework** — CLI-only pipeline
+- **Web UI:** FastAPI + HTMX + Jinja2 + Pico.css
+- **YouTube ingestion:** youtube-transcript-api, yt-dlp, faster-whisper
+- **System dependency:** FFmpeg (required for YouTube Whisper fallback; install via `winget install Gyan.FFmpeg` on Windows)
 
 ## Project Structure
 
@@ -46,20 +48,24 @@ app/
     ├── logger.py         # Run logging
     ├── json_extract.py   # LLM output JSON parsing
     ├── snippets.py       # Evidence snippet generation
-    └── review.py         # Interactive claim review
+    ├── review.py         # Interactive claim review
+    └── youtube.py        # YouTube transcript fetch + Whisper fallback
 ```
 
 ## How to Run
 
 ```bash
-# Activate venv and run
-./run.sh
-
-# Or directly
+# From a transcript file
 python -m app.main --infile inbox/transcript.txt --channel "ChannelName"
+
+# From a YouTube URL (auto-fetches transcript)
+python -m app.main --url "https://www.youtube.com/watch?v=VIDEO_ID"
 
 # With interactive review mode
 python -m app.main --infile inbox/transcript.txt --review
+
+# Web UI
+python -m app.web.server
 ```
 
 ## Key Configuration

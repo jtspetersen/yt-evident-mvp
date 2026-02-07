@@ -115,6 +115,58 @@ def prompt_yes_no(question: str, default: bool = True) -> bool:
 # Phase 1: Prerequisites Check
 # ----------------------------
 
+def _install_ffmpeg() -> bool:
+    """Attempt to install FFmpeg automatically. Returns True if installed."""
+    import platform
+    system = platform.system()
+
+    if system == "Windows":
+        # Try winget (Windows Package Manager)
+        print_step("Attempting to install FFmpeg via winget...")
+        try:
+            result = subprocess.run(
+                ["winget", "install", "--id", "Gyan.FFmpeg",
+                 "--accept-source-agreements", "--accept-package-agreements"],
+                capture_output=False, text=True, timeout=300,
+            )
+            if result.returncode == 0:
+                print_success("FFmpeg installed via winget")
+                print_warning("Restart your terminal for PATH to take effect")
+                return True
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+
+        print_warning("winget not available. Install FFmpeg manually:")
+        print_warning("  winget install Gyan.FFmpeg")
+        print_warning("  -- or download from https://ffmpeg.org/download.html")
+        return False
+
+    elif system == "Linux":
+        # Try apt (Debian/Ubuntu)
+        print_step("Attempting to install FFmpeg via apt...")
+        try:
+            subprocess.run(["sudo", "apt-get", "install", "-y", "ffmpeg"],
+                           check=True, timeout=120)
+            print_success("FFmpeg installed via apt")
+            return True
+        except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            pass
+        return False
+
+    elif system == "Darwin":
+        # Try brew (macOS)
+        print_step("Attempting to install FFmpeg via brew...")
+        try:
+            subprocess.run(["brew", "install", "ffmpeg"], check=True, timeout=300)
+            print_success("FFmpeg installed via brew")
+            return True
+        except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            pass
+        return False
+
+    return False
+
+
 def check_prerequisites() -> Dict[str, bool]:
     """Check if required tools are installed."""
     print_header("Phase 1: Prerequisites Check")
@@ -149,6 +201,22 @@ def check_prerequisites() -> Dict[str, bool]:
     else:
         print_error(f"Python 3.11+ required, found {sys.version_info.major}.{sys.version_info.minor}")
         results["python"] = False
+
+    # FFmpeg (required for YouTube transcript Whisper fallback)
+    print_step("Checking FFmpeg...")
+    try:
+        version = run_command(["ffmpeg", "-version"], capture=True)
+        version_line = version.split('\n')[0] if version else "unknown"
+        print_success(f"FFmpeg installed: {version_line}")
+        results["ffmpeg"] = True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        print_warning("FFmpeg not found (needed for YouTube Whisper fallback)")
+        if _install_ffmpeg():
+            results["ffmpeg"] = True
+        else:
+            print_warning("FFmpeg not installed. YouTube Whisper fallback will not work.")
+            print_warning("Caption-based transcripts will still work without it.")
+            results["ffmpeg"] = False
 
     return results
 
@@ -1325,9 +1393,14 @@ def main():
 
     # Phase 1: Prerequisites
     prereqs = check_prerequisites()
-    if not all(prereqs.values()):
+    # Hard requirements: Docker, Docker Compose, Python
+    # Soft requirements: FFmpeg (only needed for YouTube Whisper fallback)
+    hard_reqs = {k: v for k, v in prereqs.items() if k != "ffmpeg"}
+    if not all(hard_reqs.values()):
         print_error("Missing prerequisites. Please install required tools and try again.")
         sys.exit(1)
+    if not prereqs.get("ffmpeg"):
+        print_warning("Setup will continue without FFmpeg. Install it later for YouTube Whisper support.")
 
     # Phase 2: Hardware
     hw = detect_hardware()
