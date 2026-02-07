@@ -26,7 +26,7 @@
             <td><code>{{ r.get('run_id', '?') }}</code></td>
             <td>
                 {% set vc = r.get('verdict_counts', {}) %}
-                {% for rating in ['VERIFIED', 'LIKELY TRUE', 'INSUFFICIENT EVIDENCE', 'CONFLICTING EVIDENCE', 'LIKELY FALSE', 'FALSE'] %}
+                {% for rating in ['TRUE', 'LIKELY TRUE', 'INSUFFICIENT EVIDENCE', 'CONFLICTING EVIDENCE', 'LIKELY FALSE', 'FALSE'] %}
                     {% set count = vc.get(rating, 0) %}
                     {% if count > 0 %}
                     <span class="badge badge-{{ rating.lower().replace(' ', '-') }}" style="font-size:0.7em; margin-right:2px;">

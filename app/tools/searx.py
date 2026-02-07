@@ -1,6 +1,7 @@
 # app/tools/searx.py
 import requests
 from urllib.parse import urlparse
+from app.tools.snippets import score_snippet
 
 def _host(url: str) -> str:
     try:
@@ -38,3 +39,27 @@ def searx_search(base_url: str, query: str, num_results: int = 8, deny_domains=N
             break
 
     return out
+
+
+def prefilter_results(results, claim_text, min_preview_score=0.15):
+    """
+    Score each SearX result by title+content preview relevance.
+    Filters out results below threshold and sorts by descending relevance.
+    Saves fetch budget by skipping irrelevant pages before downloading.
+    """
+    scored = []
+    for r in results:
+        preview = " ".join(filter(None, [
+            r.get("title") or "",
+            r.get("content") or "",
+        ]))
+        if not preview.strip():
+            # No preview available — keep it (benefit of the doubt)
+            scored.append((0.5, r))
+            continue
+        ps = score_snippet(claim_text, preview)
+        if ps >= min_preview_score:
+            scored.append((ps, r))
+
+    scored.sort(reverse=True, key=lambda x: x[0])
+    return [r for (_, r) in scored]

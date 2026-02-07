@@ -6,10 +6,10 @@ from dateutil import tz
 from urllib.parse import urlparse
 from tqdm import tqdm
 
-from app.tools.searx import searx_search
+from app.tools.searx import searx_search, prefilter_results
 from app.tools.fetch import fetch_url
 from app.tools.parse import extract_text_from_html
-from app.tools.snippets import make_snippets, top_k_snippets
+from app.tools.snippets import make_snippets, top_k_snippets, _tokenize_no_stop
 
 # ---------------------------
 # Helpers
@@ -134,6 +134,20 @@ def is_probably_not_html(text: str) -> bool:
         return True
     return False
 
+
+def _make_factcheck_query(claim_text, entities=None):
+    """Build a fact-check-targeted query from claim entities or key tokens."""
+    if entities:
+        key_terms = " ".join(str(e) for e in entities[:3])
+    else:
+        tokens = _tokenize_no_stop(claim_text)
+        if not tokens:
+            return ""
+        key_terms = " ".join(tokens[:5])
+
+    return f"{key_terms} fact check"
+
+
 # ---------------------------
 # Main retrieval
 # ---------------------------
@@ -163,9 +177,17 @@ def retrieve_for_claims(
     snippet_max_chars: int = 1200,
     deny_domains=None,
     query_overrides=None,
+    generated_queries=None,
     extra_fetch_budget: int = 0,
     progress_callback=None,
 ):
+    """
+    Retrieve evidence for a list of claims.
+
+    Args:
+        generated_queries: dict mapping claim_id -> list[str] of LLM-generated
+            search queries. If None, falls back to raw claim_text.
+    """
     retrieved_at = datetime.now(tz.gettz(tz_name)).isoformat()
 
     all_sources = []
@@ -179,6 +201,13 @@ def retrieve_for_claims(
 
     deny_domains = [d.lower() for d in (deny_domains or [])]
     query_overrides = query_overrides or {}
+    generated_queries = generated_queries or {}
+
+    # Multi-query and pre-filter config
+    queries_per_claim = int(budgets.get("queries_per_claim", 1))
+    enable_prefilter = bool(budgets.get("enable_source_prefilter", True))
+    min_preview_score = float(budgets.get("min_preview_score", 0.15))
+    enable_factcheck = bool(budgets.get("enable_factcheck_query", True))
 
     # Track repeated domain failures to avoid burning budget on a single blocked host
     domain_fail_counts = {}   # host -> count
@@ -215,18 +244,50 @@ def retrieve_for_claims(
                 "failures": len(fetch_failures),
             })
 
-            query = query_overrides.get(c.claim_id) or c.claim_text
+            # --- Determine queries for this claim ---
+            if c.claim_id in query_overrides:
+                # Manual override (backward compat): single query
+                claim_queries = [query_overrides[c.claim_id]]
+            elif c.claim_id in generated_queries:
+                claim_queries = generated_queries[c.claim_id][:queries_per_claim]
+            else:
+                claim_queries = [c.claim_text]
 
-            results = searx_search(
-                searx_base,
-                query,
-                num_results=int(budgets["max_sources_per_claim"]),
-                deny_domains=deny_domains
-            )
+            # Add fact-check query if enabled and budget allows
+            if enable_factcheck and len(claim_queries) < queries_per_claim:
+                entities = getattr(c, "entities", None)
+                fc_query = _make_factcheck_query(c.claim_text, entities)
+                if fc_query and fc_query not in claim_queries:
+                    claim_queries.append(fc_query)
+
+            # --- Execute all queries, collect and deduplicate results ---
+            max_sources = int(budgets["max_sources_per_claim"])
+            results_per_query = max(3, max_sources // max(1, len(claim_queries)))
+
+            seen_urls = set()
+            all_results = []
+
+            for query in claim_queries:
+                results = searx_search(
+                    searx_base,
+                    query,
+                    num_results=results_per_query,
+                    deny_domains=deny_domains,
+                )
+
+                # Pre-filter by title/content relevance
+                if enable_prefilter:
+                    results = prefilter_results(results, c.claim_text, min_preview_score)
+
+                for r in results:
+                    url = r.get("url")
+                    if url and url not in seen_urls:
+                        seen_urls.add(url)
+                        all_results.append(r)
 
             # --- Filter candidates and submit parallel fetches ---
             candidates = []  # (url, title, host_str)
-            for r in results:
+            for r in all_results:
                 if fetch_count + len(candidates) >= max_fetches:
                     break
 
@@ -249,7 +310,8 @@ def retrieve_for_claims(
             if not candidates:
                 evidence_by_claim[c.claim_id] = {
                     "claim_id": c.claim_id,
-                    "query": query,
+                    "query": claim_queries[0],
+                    "queries": claim_queries,
                     "snippets": []
                 }
                 continue
@@ -285,7 +347,7 @@ def retrieve_for_claims(
                         "status": result.get("status"),
                         "error": result.get("error"),
                         "claim_id": c.claim_id,
-                        "query": query
+                        "query": claim_queries[0]
                     })
                     claim_bar.set_postfix_str(f"src={len(all_sources)} snip={len(all_snippets)} fail={len(fetch_failures)}")
                     continue
@@ -327,7 +389,8 @@ def retrieve_for_claims(
 
             evidence_by_claim[c.claim_id] = {
                 "claim_id": c.claim_id,
-                "query": query,
+                "query": claim_queries[0],
+                "queries": claim_queries,
                 "snippets": claim_snips
             }
             claim_bar.set_description("Retrieving evidence")

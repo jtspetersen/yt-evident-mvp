@@ -14,18 +14,22 @@ def ollama_chat(
     max_retries: int = 2,
     num_predict: int = 4096,         # Max output tokens
     show_progress: bool = False,     # Show progress bar during generation
+    seed: int = None,                # Deterministic seed for reproducibility
 ) -> str:
     url = f"{base_url}/api/chat"
+    options = {
+        "temperature": float(temperature),
+        "num_predict": num_predict,
+    }
+    if seed is not None:
+        options["seed"] = int(seed)
     payload = {
         "model": model,
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
-        "options": {
-            "temperature": float(temperature),
-            "num_predict": num_predict,
-        },
+        "options": options,
         "stream": show_progress,  # Enable streaming when showing progress
     }
     if force_json:

@@ -20,7 +20,8 @@ from app.tools.review import review_claims_interactive
 from app.pipeline.ingest import normalize_transcript, write_json
 from app.pipeline.extract_claims import extract_claims
 from app.pipeline.retrieve_evidence import retrieve_for_claims
-from app.pipeline.verify_claims import verify_one
+from app.pipeline.consolidate_claims import consolidate_claims
+from app.pipeline.verify_claims import verify_one, verify_group
 from app.pipeline.scorecard import tally
 from app.pipeline.write_outputs import write_text, write_outline_and_script
 
@@ -322,11 +323,12 @@ def main():
     stage_order = [
         "normalize_transcript",
         "extract_claims",
+        "consolidate_claims",
         "review_claims_interactive",
         "retrieve_evidence",
-        "verify_claims",
+        "check_claims",
         "scorecard",
-        "write_outline_and_script",
+        "fact_check_summary",
     ]
 
     t0 = time.time()
@@ -359,8 +361,11 @@ def main():
                 "model_extract": cfg["ollama"].get("model_extract"),
                 "model_verify": cfg["ollama"].get("model_verify"),
                 "model_write": cfg["ollama"].get("model_write"),
+                "model_consolidate": cfg["ollama"].get("model_consolidate", cfg["ollama"].get("model_extract")),
+                "model_verify_group": cfg["ollama"].get("model_verify_group", cfg["ollama"].get("model_verify")),
                 "temperature_extract": cfg["ollama"].get("temperature_extract", 0.1),
                 "temperature_verify": cfg["ollama"].get("temperature_verify", 0.0),
+                "temperature_consolidate": cfg["ollama"].get("temperature_consolidate", 0.1),
             },
             "budgets": cfg.get("budgets", {}),
             "timezone": cfg.get("output", {}).get("timezone"),
@@ -370,6 +375,9 @@ def main():
 
         "counts": {
             "claims_extracted": 0,
+            "claims_consolidated": 0,
+            "duplicates_removed": 0,
+            "narrative_groups": 0,
             "claims_kept": 0,
             "sources": 0,
             "snippets": 0,
@@ -426,7 +434,8 @@ def main():
             cfg["ollama"]["model_extract"],
             transcript_json,
             max_claims=cfg["budgets"]["max_claims"],
-            temperature=cfg["ollama"].get("temperature_extract", 0.1),
+            temperature=cfg["ollama"].get("temperature_extract", 0.0),
+            chunk_overlap=cfg["budgets"].get("extract_chunk_overlap", 8),
         )
         stage_end(manifest, "extract_claims", s)
 
@@ -440,7 +449,41 @@ def main():
         write_run_manifest(outdir, manifest)
         write_artifacts_index(outdir, manifest)
 
-        # 2b) Review mode
+        # 2b) Consolidate claims (dedup + narrative grouping)
+        log.log("Stage 2b: consolidate claims")
+        s = stage_start(manifest, "consolidate_claims")
+        groups = []
+        if len(claims) >= 2:
+            model_consolidate = cfg["ollama"].get("model_consolidate", cfg["ollama"]["model_extract"])
+            temp_consolidate = cfg["ollama"].get("temperature_consolidate", 0.1)
+            claims, groups = consolidate_claims(
+                cfg["ollama"]["base_url"],
+                model_consolidate,
+                claims,
+                transcript_json,
+                temperature=temp_consolidate,
+            )
+            # Save consolidated artifact
+            consolidated_data = {
+                "claims": [c.model_dump() for c in claims],
+                "groups": [g.model_dump() for g in groups],
+            }
+            with open(os.path.join(outdir, "02b_claims.consolidated.json"), "w", encoding="utf-8") as f:
+                json.dump(consolidated_data, f, ensure_ascii=False, indent=2)
+            add_artifact(manifest, "claims_consolidated", "02b_claims.consolidated.json")
+
+            manifest["counts"]["claims_consolidated"] = len(claims)
+            manifest["counts"]["duplicates_removed"] = manifest["counts"]["claims_extracted"] - len(claims)
+            manifest["counts"]["narrative_groups"] = len(groups)
+            manifest["counts"]["claims_kept"] = len(claims)
+            log.log(f"Consolidation: {manifest['counts']['duplicates_removed']} duplicates removed, {len(groups)} narrative groups")
+        else:
+            log.log("Skipping consolidation (fewer than 2 claims)")
+        stage_end(manifest, "consolidate_claims", s)
+        write_run_manifest(outdir, manifest)
+        write_artifacts_index(outdir, manifest)
+
+        # 2c) Review mode
         if args.review:
             log.log("Stage 2b: review claims (interactive)")
             s = stage_start(manifest, "review_claims_interactive")
@@ -467,12 +510,45 @@ def main():
                 print(f"No claims kept. Outputs in: {outdir}")
                 return
 
+        # Post-review group cleanup: remove dropped claims from groups
+        if groups:
+            kept_ids = {c.claim_id for c in claims}
+            cleaned_groups = []
+            for g in groups:
+                g.claim_ids = [cid for cid in g.claim_ids if cid in kept_ids]
+                if len(g.claim_ids) >= 2:
+                    cleaned_groups.append(g)
+            if len(cleaned_groups) != len(groups):
+                log.log(f"Groups after review cleanup: {len(cleaned_groups)} (was {len(groups)})")
+            groups = cleaned_groups
+            manifest["counts"]["narrative_groups"] = len(groups)
+
         # 3) Retrieve evidence
         log.log("Stage 3: retrieve evidence")
         s = stage_start(manifest, "retrieve_evidence")
 
         budgets = cfg["budgets"]
         deny_domains = (cfg.get("searx", {}).get("deny_domains") or [])
+
+        # Generate search queries via LLM (multi-query strategy)
+        generated_queries = None
+        if budgets.get("enable_query_generation", True):
+            from app.tools.query_gen import generate_queries_batch
+            model_query = cfg["ollama"].get("model_query_gen", cfg["ollama"]["model_extract"])
+            temp_query = float(cfg["ollama"].get("temperature_query_gen", 0.3))
+            num_q = int(budgets.get("queries_per_claim", 3))
+            workers_q = int(budgets.get("query_gen_workers", 3))
+
+            log.log(f"Generating search queries ({num_q} per claim, {workers_q} workers)...")
+            generated_queries = generate_queries_batch(
+                cfg["ollama"]["base_url"], model_query, claims,
+                num_queries=num_q, temperature=temp_query, max_workers=workers_q,
+            )
+            log.log(f"Generated search queries for {len(generated_queries)} claims")
+
+            with open(os.path.join(outdir, "02d_queries.json"), "w", encoding="utf-8") as f:
+                json.dump(generated_queries, f, ensure_ascii=False, indent=2)
+            add_artifact(manifest, "generated_queries", "02d_queries.json")
 
         sources, snippets, evidence_by_claim, fetch_failures = retrieve_for_claims(
             cfg["searx"]["base_url"],
@@ -482,6 +558,7 @@ def main():
             snippets_per_source=budgets.get("snippets_per_source", 4),
             snippet_max_chars=budgets.get("snippet_max_chars", 1200),
             deny_domains=deny_domains,
+            generated_queries=generated_queries,
         )
 
         stage_end(manifest, "retrieve_evidence", s)
@@ -520,9 +597,9 @@ def main():
         write_run_manifest(outdir, manifest)
         write_artifacts_index(outdir, manifest)
 
-        # 4) Verify claims
-        log.log("Stage 4: verify claims")
-        s = stage_start(manifest, "verify_claims")
+        # 4) Check claims
+        log.log("Stage 4: check claims")
+        s = stage_start(manifest, "check_claims")
 
         verify_workers = int(cfg["budgets"].get("verify_workers", 3))
 
@@ -568,7 +645,7 @@ def main():
             verdicts.append(v)
             per_claim_secs.append(sec)
 
-        stage_end(manifest, "verify_claims", s)
+        stage_end(manifest, "check_claims", s)
 
         with open(os.path.join(outdir, "05_verdicts.json"), "w", encoding="utf-8") as f:
             json.dump([v.model_dump() for v in verdicts], f, ensure_ascii=False, indent=2)
@@ -577,13 +654,37 @@ def main():
         manifest["counts"]["verdicts"] = len(verdicts)
 
         if per_claim_secs:
-            manifest["timings"].setdefault("verify_claims", {})
-            manifest["timings"]["verify_claims"]["per_claim_sec"] = {
+            manifest["timings"].setdefault("check_claims", {})
+            manifest["timings"]["check_claims"]["per_claim_sec"] = {
                 "min": round(min(per_claim_secs), 4),
                 "max": round(max(per_claim_secs), 4),
                 "avg": round(sum(per_claim_secs) / len(per_claim_secs), 4),
                 "n": len(per_claim_secs),
             }
+
+        # Group verification (narrative-level)
+        group_verdicts = []
+        if groups:
+            model_verify_group = cfg["ollama"].get("model_verify_group", cfg["ollama"]["model_verify"])
+            log.log(f"Verifying {len(groups)} narrative groups")
+            for gi, g in enumerate(groups, 1):
+                log.log(f"Group {gi}/{len(groups)}: {g.group_id} — {g.narrative_thesis[:60]}...")
+                gv = verify_group(
+                    cfg["ollama"]["base_url"],
+                    model_verify_group,
+                    g,
+                    claims,
+                    verdicts,
+                    evidence_by_claim,
+                    transcript_json=transcript_json,
+                    temperature=cfg["ollama"].get("temperature_verify", 0.0),
+                )
+                group_verdicts.append(gv)
+                log.log(f"Group {g.group_id}: {gv.narrative_rating} (confidence={gv.narrative_confidence})")
+
+            with open(os.path.join(outdir, "05b_group_verdicts.json"), "w", encoding="utf-8") as f:
+                json.dump([gv.model_dump() for gv in group_verdicts], f, ensure_ascii=False, indent=2)
+            add_artifact(manifest, "group_verdicts", "05b_group_verdicts.json")
 
         write_run_manifest(outdir, manifest)
         write_artifacts_index(outdir, manifest)
@@ -617,9 +718,9 @@ def main():
         write_run_manifest(outdir, manifest)
         write_artifacts_index(outdir, manifest)
 
-        # 6) Writer
-        log.log("Stage 6: write outline + script")
-        s = stage_start(manifest, "write_outline_and_script")
+        # 6) Fact-check summary
+        log.log("Stage 6: fact-check summary")
+        s = stage_start(manifest, "fact_check_summary")
         writer_md = write_outline_and_script(
             cfg["ollama"]["base_url"],
             cfg["ollama"]["model_write"],
@@ -628,8 +729,10 @@ def main():
             scorecard_md,
             claims,
             manifest["channel"]["raw"],
+            groups=groups,
+            group_verdicts=group_verdicts,
         )
-        stage_end(manifest, "write_outline_and_script", s)
+        stage_end(manifest, "fact_check_summary", s)
 
         write_text(os.path.join(outdir, "07_summary.md"), writer_md)
         add_artifact(manifest, "writer_md", "07_summary.md")

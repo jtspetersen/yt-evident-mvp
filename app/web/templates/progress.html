@@ -70,6 +70,16 @@
     </div>
 </div>
 
+<!-- Consolidate claims detail panel -->
+<div class="stage-detail" id="consolidate-detail">
+    <h4>Consolidating Claims</h4>
+    <div class="detail-message" id="consolidate-message">Analyzing claims for duplicates and narrative groups...</div>
+    <div class="detail-stats">
+        <div>Duplicates removed: <strong id="consolidate-dupes">0</strong></div>
+        <div>Narrative groups: <strong id="consolidate-groups">0</strong></div>
+    </div>
+</div>
+
 <!-- Retrieve evidence detail panel -->
 <div class="stage-detail" id="retrieve-detail">
     <h4>Retrieving Evidence</h4>
@@ -83,13 +93,13 @@
     </div>
 </div>
 
-<!-- Verify claims detail panel -->
+<!-- Check claims detail panel -->
 <div class="stage-detail" id="verify-detail">
-    <h4>Verifying Claims</h4>
+    <h4>Checking Claims</h4>
     <div class="detail-message" id="verify-message">Preparing...</div>
     <progress id="verify-bar" value="0" max="1"></progress>
     <div class="detail-stats">
-        <div>Verified <strong id="verify-current">0</strong> / <span id="verify-total">0</span></div>
+        <div>Checked <strong id="verify-current">0</strong> / <span id="verify-total">0</span></div>
     </div>
 </div>
 
@@ -116,6 +126,20 @@
         <strong id="cnt-failures">{{ cnts.get('fetch_failures', 0) }}</strong>
         <small>Failures</small>
     </div>
+    <div>
+        <strong id="cnt-groups">{{ cnts.get('narrative_groups', 0) }}</strong>
+        <small>Groups</small>
+    </div>
+</div>
+
+<!-- Stop button -->
+<div style="margin: 1rem 0;" id="stop-container">
+    <form method="POST" action="/run/{{ run_id }}/stop"
+          onsubmit="return confirm('Stop this run?');">
+        <button type="submit" class="outline secondary" id="stop-btn">
+            Stop Run
+        </button>
+    </form>
 </div>
 
 <!-- Log stream -->
@@ -138,6 +162,7 @@
 
     // Detail panel elements
     const extractDetail = document.getElementById('extract-detail');
+    const consolidateDetail = document.getElementById('consolidate-detail');
     const retrieveDetail = document.getElementById('retrieve-detail');
     const verifyDetail = document.getElementById('verify-detail');
 
@@ -187,11 +212,13 @@
 
             // Show/hide detail panels based on which stage is active
             hidePanel(extractDetail);
+            hidePanel(consolidateDetail);
             hidePanel(retrieveDetail);
             hidePanel(verifyDetail);
             if (data.name === 'extract_claims') showPanel(extractDetail);
+            else if (data.name === 'consolidate_claims') showPanel(consolidateDetail);
             else if (data.name === 'retrieve_evidence') showPanel(retrieveDetail);
-            else if (data.name === 'verify_claims') showPanel(verifyDetail);
+            else if (data.name === 'check_claims') showPanel(verifyDetail);
 
         } else if (data.status === 'completed') {
             el.classList.remove('active');
@@ -200,8 +227,9 @@
             if (activeStage === data.name) activeStage = null;
 
             if (data.name === 'extract_claims') hidePanel(extractDetail);
+            if (data.name === 'consolidate_claims') hidePanel(consolidateDetail);
             if (data.name === 'retrieve_evidence') hidePanel(retrieveDetail);
-            if (data.name === 'verify_claims') hidePanel(verifyDetail);
+            if (data.name === 'check_claims') hidePanel(verifyDetail);
         }
     });
 
@@ -242,6 +270,30 @@
         } else if (d.status === 'done') {
             bar.value = bar.max;
             msg.textContent = 'Extraction complete';
+        }
+    });
+
+    // -- Consolidate claims progress --
+    source.addEventListener('consolidate_progress', function(e) {
+        const d = JSON.parse(e.data);
+        showPanel(consolidateDetail);
+
+        const msg = document.getElementById('consolidate-message');
+        const dupesEl = document.getElementById('consolidate-dupes');
+        const groupsEl = document.getElementById('consolidate-groups');
+
+        if (d.status === 'analyzing') {
+            msg.textContent = 'Analyzing ' + d.total_claims + ' claims for duplicates and narrative groups...';
+        } else if (d.status === 'done') {
+            dupesEl.textContent = d.duplicates_removed || 0;
+            groupsEl.textContent = d.groups || 0;
+            document.getElementById('cnt-groups').textContent = d.groups || 0;
+            document.getElementById('cnt-claims').textContent = d.total_claims || 0;
+            msg.textContent = 'Consolidation complete \u2014 ' + (d.duplicates_removed || 0) + ' duplicates removed, ' + (d.groups || 0) + ' narrative groups';
+        } else if (d.status === 'skipped') {
+            msg.textContent = 'Skipped: ' + (d.reason || 'N/A');
+        } else if (d.status === 'error') {
+            msg.textContent = 'Consolidation failed, continuing with original claims';
         }
     });
 
@@ -314,7 +366,7 @@
         document.getElementById('verify-bar').value = cur;
         document.getElementById('verify-current').textContent = cur;
         document.getElementById('verify-total').textContent = tot;
-        document.getElementById('verify-message').textContent = 'Verified ' + cur + ' of ' + tot + ' claims...';
+        document.getElementById('verify-message').textContent = 'Checked ' + cur + ' of ' + tot + ' claims...';
     });
 
     // -- Log messages --
@@ -339,12 +391,17 @@
     source.addEventListener('done', function(e) {
         const data = JSON.parse(e.data);
         source.close();
-        statusBadge.textContent = 'done';
-        statusBadge.className = 'badge badge-done';
+
+        var doneStatus = data.status === 'cancelled' ? 'cancelled' : 'done';
+        statusBadge.textContent = doneStatus;
+        statusBadge.className = 'badge badge-' + doneStatus;
 
         hidePanel(extractDetail);
+        hidePanel(consolidateDetail);
         hidePanel(retrieveDetail);
         hidePanel(verifyDetail);
+
+        document.getElementById('stop-container').style.display = 'none';
 
         document.querySelectorAll('.stage-box.active').forEach(function(el) {
             el.classList.remove('active');
@@ -372,8 +429,10 @@
             statusBadge.textContent = 'error';
             statusBadge.className = 'badge badge-error';
             hidePanel(extractDetail);
+            hidePanel(consolidateDetail);
             hidePanel(retrieveDetail);
             hidePanel(verifyDetail);
+            document.getElementById('stop-container').style.display = 'none';
             addLog('ERROR: ' + msg);
             source.close();
         } catch(_) {

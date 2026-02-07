@@ -1,6 +1,8 @@
 # app/pipeline/extract_claims.py
+import hashlib
 import json
 import os
+import re
 from typing import List
 from app.tools.ollama_client import ollama_chat
 from app.tools.json_extract import extract_json
@@ -14,6 +16,7 @@ def _should_log(level: str) -> bool:
     current_level = os.environ.get("EVIDENT_LOG_LEVEL", "INFO")
     return levels.get(level, 1) >= levels.get(current_level, 1)
 
+
 SYSTEM = f"""You are a claim extraction system. Extract ALL checkable factual claims from the provided transcript.
 
 DO NOT extract: opinions, predictions, rhetoric, value judgments
@@ -24,6 +27,12 @@ CRITICAL EXTRACTION RULES:
 2. Make claims COMPLETE and SELF-CONTAINED - include what numbers refer to
 3. Use surrounding context to clarify vague claims
 4. COMBINE claims that form a single logical argument in the same sentence/context
+
+EXTRACTION WORKFLOW — follow these steps IN ORDER:
+1. Read through the transcript and identify exact quotes that contain factual claims
+2. For each quote, formulate a complete, self-contained claim
+3. The quote_from_transcript field MUST be an EXACT substring copied from the transcript — do not paraphrase or rephrase
+4. The claim_text field should expand the quote into a complete, verifiable statement using surrounding context
 
 When to COMBINE claims into ONE:
 - Causal relationships: "Without X, then Y" or "X causes Y"
@@ -62,7 +71,7 @@ CRITICAL: Each array element must be an OBJECT with these fields:
 - segment_id (string)
 - timestamp (null or string)
 - claim_text (string) - MUST be complete and self-contained
-- quote_from_transcript (string)
+- quote_from_transcript (string) - MUST be an exact verbatim substring from the transcript
 - claim_type (string: statistic|event_date|quote_attribution|causal|medical_science|policy_legal|study_says|biography|other)
 - entities (array of strings)
 - check_priority (string: high|medium|low)
@@ -70,28 +79,72 @@ CRITICAL: Each array element must be an OBJECT with these fields:
 
 Example - extract ALL claims in this format:
 [
-  {{"claim_id": "C001", "segment_id": "S001", "timestamp": null, "claim_text": "specific complete factual claim", "quote_from_transcript": "exact quote", "claim_type": "statistic", "entities": [], "check_priority": "high", "needs_context": []}},
-  {{"claim_id": "C002", "segment_id": "S002", "timestamp": null, "claim_text": "another complete factual claim", "quote_from_transcript": "exact quote", "claim_type": "event_date", "entities": [], "check_priority": "medium", "needs_context": []}}
+  {{"claim_id": "C001", "segment_id": "S001", "timestamp": null, "claim_text": "specific complete factual claim", "quote_from_transcript": "exact verbatim quote copied from the transcript text", "claim_type": "statistic", "entities": [], "check_priority": "high", "needs_context": []}},
+  {{"claim_id": "C002", "segment_id": "S002", "timestamp": null, "claim_text": "another complete factual claim", "quote_from_transcript": "exact verbatim quote copied from the transcript text", "claim_type": "event_date", "entities": [], "check_priority": "medium", "needs_context": []}}
 ]
 
 {FACT_CHECKING_STANDARDS}
 
 IMPORTANT: Return array of OBJECTS, not strings. Each element must have all required fields.
-Extract EVERY claim. Make each claim COMPLETE."""
+Extract EVERY claim. Make each claim COMPLETE. Quotes MUST be exact substrings from the transcript."""
 
-def _extract_from_chunk(ollama_base: str, model: str, chunk_json: dict, temperature: float, max_retries: int = 2) -> list:
+
+# ---------------------------------------------------------------------------
+# Normalization & seeding helpers
+# ---------------------------------------------------------------------------
+
+def _chunk_seed(chunk_json):
+    """Derive a deterministic seed from chunk content."""
+    text = json.dumps(chunk_json, sort_keys=True, ensure_ascii=False)
+    return int(hashlib.sha256(text.encode()).hexdigest()[:8], 16)
+
+
+def _normalize_claim_text(text):
+    """Normalize claim text to reduce surface variation between runs."""
+    # Standardize whitespace
+    text = " ".join(text.split())
+    # Standardize number formats: remove commas in numbers (1,000 → 1000)
+    text = re.sub(r'(\d),(\d{3})', r'\1\2', text)
+    # Standardize percentages: "50 percent" → "50%"
+    text = re.sub(r'(\d+)\s*percent', r'\1%', text, flags=re.IGNORECASE)
+    # Standardize billions/millions: normalize spacing
+    text = re.sub(r'(\d+)\s+(billion|million|trillion)', r'\1 \2', text, flags=re.IGNORECASE)
+    # Strip trailing periods (some runs add them, some don't)
+    text = text.rstrip('.')
+    return text.strip()
+
+
+# ---------------------------------------------------------------------------
+# Chunk extraction
+# ---------------------------------------------------------------------------
+
+def _extract_from_chunk(ollama_base: str, model: str, chunk_json: dict,
+                        temperature: float, seed: int = None,
+                        max_retries: int = 2) -> list:
     """Extract claims from a single chunk of segments."""
     import sys
     import time
     user_prompt = json.dumps(chunk_json, ensure_ascii=False)
-    user_with_instruction = f"{user_prompt}\n\nIMPORTANT: Return a JSON array with ALL checkable factual claims from these segments. Make each claim COMPLETE and SELF-CONTAINED - if a claim mentions a number or percentage, include what it refers to by using surrounding context. COMBINE claims that form a single causal or conditional argument (like 'Without X then Y') into ONE compound claim."
+    user_with_instruction = (
+        f"{user_prompt}\n\n"
+        "IMPORTANT: Return a JSON array with ALL checkable factual claims from "
+        "these segments. Make each claim COMPLETE and SELF-CONTAINED - if a claim "
+        "mentions a number or percentage, include what it refers to by using "
+        "surrounding context. COMBINE claims that form a single causal or "
+        "conditional argument (like 'Without X then Y') into ONE compound claim. "
+        "The quote_from_transcript MUST be copied exactly from the transcript text."
+    )
 
     if _should_log("DEBUG"):
         print(f"DEBUG: Processing chunk with {len(chunk_json.get('segments', []))} segments", file=sys.stderr)
 
     # Retry logic for empty responses
     for attempt in range(max_retries + 1):
-        raw = ollama_chat(ollama_base, model, SYSTEM, user_with_instruction, temperature=temperature, force_json=False, num_predict=8192, show_progress=True)
+        raw = ollama_chat(
+            ollama_base, model, SYSTEM, user_with_instruction,
+            temperature=temperature, force_json=False,
+            num_predict=8192, show_progress=True, seed=seed,
+        )
 
         # If we got content, break out of retry loop
         if raw and raw.strip():
@@ -137,6 +190,11 @@ def _extract_from_chunk(ollama_base: str, model: str, chunk_json: dict, temperat
                 })
             data = converted
 
+        # Normalize claim text for consistency
+        for item in data:
+            if isinstance(item, dict) and "claim_text" in item:
+                item["claim_text"] = _normalize_claim_text(item["claim_text"])
+
         return data if isinstance(data, list) else []
     except Exception as e:
         if _should_log("DEBUG"):
@@ -147,7 +205,7 @@ def _extract_from_chunk(ollama_base: str, model: str, chunk_json: dict, temperat
 def _deduplicate_claims(claims_data: list) -> list:
     """
     Remove duplicate claims that appeared in multiple overlapping chunks.
-    Uses text similarity to identify duplicates.
+    Uses text similarity on normalized text to identify duplicates.
     """
     import difflib
     import sys
@@ -159,7 +217,9 @@ def _deduplicate_claims(claims_data: list) -> list:
     seen_texts = []
 
     for claim in claims_data:
-        claim_text = claim.get("claim_text", "").lower().strip()
+        claim_text = _normalize_claim_text(
+            claim.get("claim_text", "")
+        ).lower()
         if not claim_text:
             continue
 
@@ -179,7 +239,15 @@ def _deduplicate_claims(claims_data: list) -> list:
 
     return unique_claims
 
-def extract_claims(ollama_base: str, model: str, transcript_json: dict, max_claims: int = 50, temperature: float = 0.1, chunk_size: int = 20, chunk_overlap: int = 5, progress_callback=None) -> List[Claim]:
+
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
+
+def extract_claims(ollama_base: str, model: str, transcript_json: dict,
+                   max_claims: int = 50, temperature: float = 0.0,
+                   chunk_size: int = 20, chunk_overlap: int = 8,
+                   progress_callback=None) -> List[Claim]:
     import sys
     import os
 
@@ -193,14 +261,29 @@ def extract_claims(ollama_base: str, model: str, transcript_json: dict, max_clai
     if len(segments) <= chunk_size:
         _cb({"chunk": 1, "total_chunks": 1, "status": "extracting", "claims_so_far": 0})
 
+        seed = _chunk_seed(transcript_json)
+
         # Original single-pass logic
         user_prompt = json.dumps(transcript_json, ensure_ascii=False)
-        user_with_instruction = f"{user_prompt}\n\nIMPORTANT: Return a JSON array with MULTIPLE claims (not just one). Review ALL segments and extract EVERY checkable factual claim. Make each claim COMPLETE and SELF-CONTAINED - if a claim mentions a number or percentage, include what it refers to by using surrounding context. COMBINE claims that form a single causal or conditional argument (like 'Without X then Y') into ONE compound claim."
+        user_with_instruction = (
+            f"{user_prompt}\n\n"
+            "IMPORTANT: Return a JSON array with MULTIPLE claims (not just one). "
+            "Review ALL segments and extract EVERY checkable factual claim. "
+            "Make each claim COMPLETE and SELF-CONTAINED - if a claim mentions a "
+            "number or percentage, include what it refers to by using surrounding "
+            "context. COMBINE claims that form a single causal or conditional "
+            "argument (like 'Without X then Y') into ONE compound claim. "
+            "The quote_from_transcript MUST be copied exactly from the transcript text."
+        )
 
         if _should_log("DEBUG"):
             print(f"DEBUG: Sending {len(user_prompt)} chars, {len(segments)} segments to {model}", file=sys.stderr)
 
-        raw = ollama_chat(ollama_base, model, SYSTEM, user_with_instruction, temperature=temperature, force_json=False, num_predict=8192, show_progress=True)
+        raw = ollama_chat(
+            ollama_base, model, SYSTEM, user_with_instruction,
+            temperature=temperature, force_json=False,
+            num_predict=8192, show_progress=True, seed=seed,
+        )
 
         _cb({"chunk": 1, "total_chunks": 1, "status": "done"})
     else:
@@ -232,7 +315,8 @@ def extract_claims(ollama_base: str, model: str, transcript_json: dict, max_clai
                 "segments": chunk_segments
             }
 
-            chunk_claims = _extract_from_chunk(ollama_base, model, chunk_json, temperature)
+            seed = _chunk_seed(chunk_json)
+            chunk_claims = _extract_from_chunk(ollama_base, model, chunk_json, temperature, seed=seed)
             all_claims_data.extend(chunk_claims)
 
             _cb({"chunk": i + 1, "total_chunks": num_chunks, "status": "chunk_done", "claims_so_far": len(all_claims_data), "chunk_claims": len(chunk_claims)})
@@ -326,6 +410,10 @@ def extract_claims(ollama_base: str, model: str, transcript_json: dict, max_clai
             print(f"WARNING: Item {i} is {type(item).__name__}, not dict. Skipping.", file=sys.stderr)
             continue
         item["claim_id"] = item.get("claim_id") or f"C{i:03d}"
+
+        # Normalize claim text for consistency
+        if "claim_text" in item:
+            item["claim_text"] = _normalize_claim_text(item["claim_text"])
 
         # Normalize invalid claim_type to 'other'
         if item.get("claim_type") not in valid_claim_types:

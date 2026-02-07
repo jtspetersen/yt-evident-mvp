@@ -18,3 +18,4 @@ class Claim(BaseModel):
     entities: List[str] = Field(default_factory=list)
     check_priority: Priority = "medium"
     needs_context: List[str] = Field(default_factory=list)
+    group_id: Optional[str] = None

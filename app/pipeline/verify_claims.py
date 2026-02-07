@@ -14,7 +14,7 @@ claim_id, rating, confidence, explanation, corrected_claim, severity,
 source_tiers_used, red_flags, citations, missing_info, rhetorical_issues
 
 rating MUST be exactly one of:
-VERIFIED, LIKELY TRUE, INSUFFICIENT EVIDENCE, CONFLICTING EVIDENCE, LIKELY FALSE, FALSE
+TRUE, LIKELY TRUE, INSUFFICIENT EVIDENCE, CONFLICTING EVIDENCE, LIKELY FALSE, FALSE
 
 Use INSUFFICIENT EVIDENCE when no relevant or credible evidence was found.
 Use CONFLICTING EVIDENCE when multiple credible sources contradict each other on the claim.
@@ -73,7 +73,7 @@ Example response format (conflicting evidence):
 
 CRITICAL CITATION RULES:
 1. If you use ANY evidence snippet in your reasoning, you MUST cite it in citations array
-2. When rating FALSE/LIKELY FALSE/VERIFIED/LIKELY TRUE, you MUST include citations
+2. When rating FALSE/LIKELY FALSE/TRUE/LIKELY TRUE, you MUST include citations
 3. Extract snippet_id, source_id, tier, url from the evidence_snippets provided
 4. Include a relevant quote (excerpt from the snippet) in each citation
 5. Do not invent source_id or snippet_id; use only those provided in evidence_snippets
@@ -105,7 +105,7 @@ Rhetorical manipulation detection:
 - Note if surrounding context changes meaning
 
 If claim is TRUE but used misleadingly:
-- rating: can be VERIFIED but add rhetorical_issues
+- rating: can be TRUE but add rhetorical_issues
 - rhetorical_issues: ["false_causation", "cherry_picked"] (array format)
 - explanation: note both truth of claim AND misuse
 
@@ -138,7 +138,7 @@ source_tiers_used, red_flags, citations, missing_info, rhetorical_issues
 
 Required field types:
 - claim_id: string
-- rating: MUST be exactly one of: VERIFIED, LIKELY TRUE, INSUFFICIENT EVIDENCE, CONFLICTING EVIDENCE, LIKELY FALSE, FALSE
+- rating: MUST be exactly one of: TRUE, LIKELY TRUE, INSUFFICIENT EVIDENCE, CONFLICTING EVIDENCE, LIKELY FALSE, FALSE
 - confidence: number between 0 and 1
 - explanation: string (required, must not be empty)
 - corrected_claim: string or null
@@ -230,7 +230,7 @@ def _normalize(data: dict, claim_id: str, sent_snippets: list) -> dict:
     else:
         rating = None
 
-    allowed = {"VERIFIED", "LIKELY TRUE", "INSUFFICIENT EVIDENCE", "CONFLICTING EVIDENCE", "LIKELY FALSE", "FALSE"}
+    allowed = {"TRUE", "LIKELY TRUE", "INSUFFICIENT EVIDENCE", "CONFLICTING EVIDENCE", "LIKELY FALSE", "FALSE"}
     if rating not in allowed:
         verdict_hint = None
         for k in ["verdict", "label", "result", "classification"]:
@@ -239,8 +239,8 @@ def _normalize(data: dict, claim_id: str, sent_snippets: list) -> dict:
                 break
         if verdict_hint in allowed:
             rating = verdict_hint
-        elif verdict_hint == "TRUE":
-            rating = "VERIFIED"
+        elif verdict_hint == "VERIFIED":
+            rating = "TRUE"
         elif verdict_hint == "FALSE":
             rating = "FALSE"
         else:
@@ -374,7 +374,7 @@ def _norm_claim_type(claim_type: str) -> str:
 def _apply_archetype_gate(data: dict, claim_type: str) -> dict:
     """
     Hard rules that enforce evidence quality based on claim archetype.
-    ASYMMETRIC: Strict tier requirements for positive ratings (VERIFIED, LIKELY TRUE),
+    ASYMMETRIC: Strict tier requirements for positive ratings (TRUE, LIKELY TRUE),
     relaxed for negative ratings (FALSE, LIKELY FALSE) since any reliable evidence can disprove.
     """
     ct = _norm_claim_type(claim_type)
@@ -382,7 +382,7 @@ def _apply_archetype_gate(data: dict, claim_type: str) -> dict:
 
     # Only apply strict tier gates to positive ratings
     # Negative ratings (FALSE, LIKELY FALSE) can use any tier if evidence clearly contradicts
-    is_positive_rating = current_rating in ["VERIFIED", "LIKELY TRUE"]
+    is_positive_rating = current_rating in ["TRUE", "LIKELY TRUE"]
 
     cits = data.get("citations") or []
     tiers = []
@@ -565,3 +565,220 @@ def verify_one(ollama_base: str, model: str, claim, evidence_bundle, outdir: str
     data = _apply_archetype_gate(data, getattr(claim, "claim_type", "") or "")
 
     return Verdict(**data)
+
+
+# ---------------------------------------------------------------------------
+# Group (narrative) verification
+# ---------------------------------------------------------------------------
+
+GROUP_VERIFY_SYSTEM = """
+Return ONLY valid JSON. No prose. No markdown. No code fences.
+
+You are a narrative analysis system. You will receive a group of related claims
+that a speaker uses together to build a larger argument or narrative.
+
+Your task is to evaluate THE NARRATIVE AS A WHOLE — not the individual claims
+(those have already been verified separately).
+
+Ask yourself:
+1. Does the narrative thesis logically follow from the individual claims and evidence?
+2. Are individually-true claims being assembled to create a MISLEADING narrative?
+3. What reasoning gaps exist between the individual facts and the narrative conclusion?
+4. Is the rhetorical strategy manipulative even if individual facts are accurate?
+
+Return exactly ONE JSON object with these keys:
+- group_id: string (use the group_id provided)
+- narrative_thesis: string (restate the narrative thesis)
+- narrative_rating: MUST be exactly one of:
+  SUPPORTED, PARTIALLY SUPPORTED, MISLEADING, LARGELY MISLEADING, UNSUPPORTED
+- narrative_confidence: number between 0 and 1
+- explanation: string — explain how the individual claims combine into the narrative
+  and whether the narrative conclusion is justified by the evidence
+- rhetorical_issues: array of strings — specific manipulation techniques detected
+- reasoning_gap: string or null — describe the logical gap between the facts presented
+  and the narrative conclusion (null if no gap)
+- claim_ids: array of strings — the claim IDs in this group
+- individual_ratings_summary: object mapping claim_id to its individual rating
+
+Rating scale:
+- SUPPORTED: The narrative conclusion logically follows from the evidence
+- PARTIALLY SUPPORTED: Some basis in evidence but overstated or oversimplified
+- MISLEADING: Individually-true claims assembled to imply a false or unsupported conclusion
+- LARGELY MISLEADING: Multiple false claims combined with rhetorical manipulation
+- UNSUPPORTED: The narrative has no evidentiary basis
+
+Example:
+{
+  "group_id": "G001",
+  "narrative_thesis": "Immigration is causing massive fiscal drain on the economy",
+  "narrative_rating": "MISLEADING",
+  "narrative_confidence": 0.8,
+  "explanation": "While C015 correctly cites a real study, the $68,000 figure is disputed. The speaker extrapolates from a single partisan study to claim trillions in losses, ignoring contradictory economic analyses that show net positive fiscal impact of immigration.",
+  "rhetorical_issues": ["cherry_picked", "appeal_to_authority", "false_extrapolation"],
+  "reasoning_gap": "A single study from a partisan think tank is presented as settled science, ignoring the broader economic consensus and methodological criticisms of the cited study.",
+  "claim_ids": ["C015", "C016", "C018"],
+  "individual_ratings_summary": {"C015": "LIKELY TRUE", "C016": "LIKELY FALSE", "C018": "MISLEADING"}
+}
+"""
+
+
+def verify_group(
+    ollama_base: str,
+    model: str,
+    group,
+    claims: list,
+    verdicts: list,
+    evidence_by_claim: dict,
+    transcript_json: dict = None,
+    temperature: float = 0.0,
+):
+    """
+    Verify a narrative claim group by evaluating how individual claims
+    combine to form a larger argument.
+
+    Args:
+        group: ClaimGroup instance
+        claims: list of all Claim objects
+        verdicts: list of all Verdict objects
+        evidence_by_claim: dict mapping claim_id → evidence bundle
+        transcript_json: full transcript for context
+        temperature: LLM temperature
+
+    Returns:
+        GroupVerdict instance
+    """
+    from app.schemas.verdict import GroupVerdict
+
+    # Build lookup tables
+    claim_by_id = {c.claim_id: c for c in claims}
+    verdict_by_id = {v.claim_id: v for v in verdicts}
+
+    # Collect member claims and their verdicts
+    member_claims = []
+    individual_summary = {}
+    for cid in group.claim_ids:
+        c = claim_by_id.get(cid)
+        v = verdict_by_id.get(cid)
+        if c:
+            entry = {
+                "claim_id": cid,
+                "claim_text": c.claim_text,
+                "quote_from_transcript": c.quote_from_transcript,
+                "claim_type": c.claim_type,
+            }
+            if v:
+                entry["rating"] = v.rating
+                entry["confidence"] = v.confidence
+                entry["explanation"] = v.explanation[:300]
+                entry["rhetorical_issues"] = v.rhetorical_issues
+                individual_summary[cid] = v.rating
+            else:
+                entry["rating"] = "NOT VERIFIED"
+                individual_summary[cid] = "NOT VERIFIED"
+            member_claims.append(entry)
+
+    # Pool evidence snippets from all group members (deduplicated)
+    seen_snippet_ids = set()
+    pooled_snippets = []
+    for cid in group.claim_ids:
+        bundle = evidence_by_claim.get(cid, {})
+        for snip in bundle.get("snippets", []):
+            sid = snip.get("snippet_id")
+            if sid and sid not in seen_snippet_ids:
+                seen_snippet_ids.add(sid)
+                pooled_snippets.append(snip)
+
+    # Take top ~10 by relevance
+    pooled_snippets = sorted(
+        pooled_snippets,
+        key=lambda s: s.get("relevance_score", 0),
+        reverse=True
+    )[:10]
+    compact_evidence = _compact_snippets(pooled_snippets, max_snips=10, max_chars=400)
+
+    # Gather transcript context around all group claims
+    transcript_context = ""
+    if transcript_json:
+        segments = transcript_json.get("segments", [])
+        seg_by_id = {s.get("id"): i for i, s in enumerate(segments)}
+        context_indices = set()
+        for cid in group.claim_ids:
+            c = claim_by_id.get(cid)
+            if c and c.segment_id in seg_by_id:
+                idx = seg_by_id[c.segment_id]
+                for i in range(max(0, idx - 1), min(len(segments), idx + 2)):
+                    context_indices.add(i)
+        if context_indices:
+            context_lines = []
+            for i in sorted(context_indices):
+                seg = segments[i]
+                context_lines.append(
+                    f"[{seg.get('timestamp', 'N/A')}] {seg.get('speaker', 'Speaker')}: {seg.get('text', '')}"
+                )
+            transcript_context = "\n".join(context_lines)
+
+    payload = {
+        "group_id": group.group_id,
+        "narrative_thesis": group.narrative_thesis,
+        "rhetorical_strategy": group.rhetorical_strategy,
+        "member_claims": member_claims,
+        "pooled_evidence": compact_evidence,
+        "transcript_context": transcript_context,
+    }
+    user = json.dumps(payload, ensure_ascii=False)
+
+    raw = ollama_chat(
+        ollama_base, model, GROUP_VERIFY_SYSTEM, user,
+        temperature=temperature,
+        force_json=True,
+        timeout_sec=900,
+        show_progress=True,
+    )
+
+    try:
+        data = extract_json(raw)
+    except Exception as e:
+        # Fallback: return a cautious group verdict
+        return GroupVerdict(
+            group_id=group.group_id,
+            narrative_thesis=group.narrative_thesis,
+            narrative_rating="PARTIALLY SUPPORTED",
+            narrative_confidence=0.3,
+            explanation=f"Group verification failed to parse: {type(e).__name__}: {e}",
+            rhetorical_issues=[],
+            reasoning_gap=None,
+            claim_ids=list(group.claim_ids),
+            individual_ratings_summary=individual_summary,
+        )
+
+    # Normalize the group verdict data
+    data = data or {}
+    data["group_id"] = group.group_id
+    data["narrative_thesis"] = group.narrative_thesis
+    data["claim_ids"] = list(group.claim_ids)
+    data["individual_ratings_summary"] = individual_summary
+
+    # Validate narrative_rating
+    allowed_ratings = {
+        "SUPPORTED", "PARTIALLY SUPPORTED", "MISLEADING",
+        "LARGELY MISLEADING", "UNSUPPORTED"
+    }
+    nr = (data.get("narrative_rating") or "").upper().strip()
+    if nr not in allowed_ratings:
+        nr = "PARTIALLY SUPPORTED"
+    data["narrative_rating"] = nr
+
+    # Validate confidence
+    try:
+        data["narrative_confidence"] = max(0.0, min(1.0, float(data.get("narrative_confidence", 0.5))))
+    except Exception:
+        data["narrative_confidence"] = 0.5
+
+    data.setdefault("explanation", "No explanation provided.")
+    data.setdefault("rhetorical_issues", [])
+    data.setdefault("reasoning_gap", None)
+
+    if isinstance(data.get("rhetorical_issues"), str):
+        data["rhetorical_issues"] = [data["rhetorical_issues"]]
+
+    return GroupVerdict(**data)

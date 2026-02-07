@@ -200,10 +200,10 @@ Four focus areas for improving pipeline quality and consistency.
 
 | Priority | Area | Impact | Effort |
 |----------|------|--------|--------|
-| 1 | **3a. Harden summary template** | High — directly visible to users | Low-Medium |
-| 2 | **1c. Extraction consistency** | High — foundational for everything downstream | Medium |
-| 3 | **2a. Better evidence sourcing** | High — better sources = better verdicts | Medium |
-| 4 | **1a. Two-pass extraction** | Medium — reduces claim fragments | Medium |
+Done | 1 | **3a. Harden summary template** | High — directly visible to users | Low-Medium |
+Done | 2 | **1c. Extraction consistency** | High — foundational for everything downstream | Medium |
+Done | 3 | **2a. Better evidence sourcing** | High — better sources = better verdicts | Medium |
+Won't Do, Alternate method implemented | 4 | **1a. Two-pass extraction** | Medium — reduces claim fragments | Medium |
 | 5 | **2b. Tiered model routing** | Medium — faster runs, same quality | Low-Medium |
-| 6 | **3b. Verbose readout structure** | Low — mostly cosmetic reorganization | Low |
-| 7 | **1b. Claim grouping UI** | Medium — powerful but complex UI work | High |
+Won't Do | 6 | **3b. Verbose readout structure** | Low — mostly cosmetic reorganization | Low |
+Won't do - Alternate menthod implemented | 7 | **1b. Claim grouping UI** | Medium — powerful but complex UI work | High |

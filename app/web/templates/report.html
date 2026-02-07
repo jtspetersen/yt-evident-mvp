@@ -12,7 +12,7 @@
 {% if scorecard %}
 <div style="display:flex; align-items:center; gap:1rem; flex-wrap:wrap; margin-bottom:1.5rem; padding:1rem; border-radius:8px; background:var(--pico-card-background-color);">
     {% set vc = scorecard.get('verdict_counts', {}) %}
-    {% for rating in ['VERIFIED', 'LIKELY TRUE', 'INSUFFICIENT EVIDENCE', 'CONFLICTING EVIDENCE', 'LIKELY FALSE', 'FALSE'] %}
+    {% for rating in ['TRUE', 'LIKELY TRUE', 'INSUFFICIENT EVIDENCE', 'CONFLICTING EVIDENCE', 'LIKELY FALSE', 'FALSE'] %}
         {% set count = vc.get(rating, 0) %}
         {% if count > 0 %}
         <span class="badge badge-{{ rating.lower().replace(' ', '-') }}" style="margin-right:0.3rem;">

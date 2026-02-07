@@ -19,7 +19,7 @@ Red flags to detect and report:
 - Cherry-picked statistics
 
 Allowed claim ratings ONLY:
-- VERIFIED
+- TRUE
 - LIKELY TRUE
 - INSUFFICIENT EVIDENCE
 - CONFLICTING EVIDENCE

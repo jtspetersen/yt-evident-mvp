@@ -124,7 +124,7 @@ async def run_events(run_id: str):
                 yield f"event: {event['event']}\ndata: {event['data']}\n\n"
 
             # If pipeline finished AND queue is empty, do one final drain then stop
-            if runner.status in ("done", "error") and not batch:
+            if runner.status in ("done", "error", "cancelled") and not batch:
                 # Brief pause for any last events the thread may emit
                 await asyncio.sleep(0.15)
                 while True:
@@ -184,6 +184,16 @@ async def submit_review(request: Request, run_id: str):
     decisions = body if isinstance(body, list) else body.get("decisions", [])
     runner.submit_review(decisions)
 
+    return RedirectResponse(url=f"/run/{run_id}", status_code=303)
+
+
+@app.post("/run/{run_id}/stop")
+async def stop_run(run_id: str):
+    """Stop a running pipeline."""
+    runner = get_runner(run_id)
+    if not runner:
+        return RedirectResponse(url=f"/run/{run_id}", status_code=303)
+    runner.stop()
     return RedirectResponse(url=f"/run/{run_id}", status_code=303)
 
 

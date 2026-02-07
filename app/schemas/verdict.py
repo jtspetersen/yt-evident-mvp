@@ -2,7 +2,7 @@
 from pydantic import BaseModel, Field
 from typing import List, Literal, Optional
 
-Rating = Literal["VERIFIED", "LIKELY TRUE", "INSUFFICIENT EVIDENCE", "CONFLICTING EVIDENCE", "LIKELY FALSE", "FALSE"]
+Rating = Literal["TRUE", "LIKELY TRUE", "INSUFFICIENT EVIDENCE", "CONFLICTING EVIDENCE", "LIKELY FALSE", "FALSE"]
 Severity = Literal["high", "medium", "low"]
 
 class Citation(BaseModel):
@@ -24,3 +24,20 @@ class Verdict(BaseModel):
     citations: List[Citation] = Field(default_factory=list)
     missing_info: List[str] = Field(default_factory=list)
     rhetorical_issues: List[str] = Field(default_factory=list)
+
+
+NarrativeRating = Literal[
+    "SUPPORTED", "PARTIALLY SUPPORTED", "MISLEADING",
+    "LARGELY MISLEADING", "UNSUPPORTED"
+]
+
+class GroupVerdict(BaseModel):
+    group_id: str
+    narrative_thesis: str
+    narrative_rating: NarrativeRating
+    narrative_confidence: float
+    explanation: str
+    rhetorical_issues: List[str] = Field(default_factory=list)
+    reasoning_gap: Optional[str] = None
+    claim_ids: List[str] = Field(default_factory=list)
+    individual_ratings_summary: dict = Field(default_factory=dict)

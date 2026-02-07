@@ -5,10 +5,15 @@ ollama:
   model_extract: "qwen3:8b"          # Lighter model for chunk-based extraction
   model_verify: "qwen3:30b"          # MoE 3B active params, strong reasoning
   model_write: "gemma3:27b"          # Top-ranked creative writing at this size
+  model_consolidate: "qwen3:8b"      # Dedup + narrative grouping (defaults to model_extract)
+  model_verify_group: "qwen3:30b"    # Narrative-level verification (defaults to model_verify)
 
-  temperature_extract: 0.1            # Low for JSON reliability, but not zero
+  temperature_extract: 0.0            # Deterministic extraction for consistency
   temperature_verify: 0.0
+  temperature_consolidate: 0.1        # Slight creativity for narrative detection
   temperature_write: 0.5              # More creative script output
+  model_query_gen: "qwen3:8b"         # Search query generation (defaults to model_extract)
+  temperature_query_gen: 0.3          # Slightly creative for query diversity
 
 searx:
   base_url: "http://localhost:8080"
@@ -41,6 +46,15 @@ budgets:
   fetch_timeout_sec: 25
   snippets_per_source: 4
   snippet_max_chars: 1200
+  extract_chunk_overlap: 8            # Segment overlap between extraction chunks (of 20)
+
+  # Evidence sourcing quality
+  queries_per_claim: 3                 # Max search queries per claim (1 = legacy single-query)
+  enable_query_generation: true        # Use LLM to rewrite claims as search queries
+  query_gen_workers: 3                 # Parallel LLM calls for query generation
+  enable_source_prefilter: true        # Pre-filter SearX results by title/content relevance
+  min_preview_score: 0.15              # Minimum preview relevance to attempt fetch (0.0-1.0)
+  enable_factcheck_query: true         # Add a fact-check-targeted query per claim
 
   # Second pass settings (only for high-severity INSUFFICIENT EVIDENCE)
   second_pass_enabled: true

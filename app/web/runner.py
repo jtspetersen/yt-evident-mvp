@@ -24,7 +24,8 @@ from app.tools.fetch import FETCH_STATS
 from app.pipeline.ingest import normalize_transcript, write_json
 from app.pipeline.extract_claims import extract_claims
 from app.pipeline.retrieve_evidence import retrieve_for_claims
-from app.pipeline.verify_claims import verify_one
+from app.pipeline.consolidate_claims import consolidate_claims
+from app.pipeline.verify_claims import verify_one, verify_group
 from app.pipeline.scorecard import tally
 from app.pipeline.write_outputs import write_text, write_outline_and_script
 
@@ -87,6 +88,11 @@ def _format_seconds(sec) -> str:
 # Pipeline Runner
 # ---------------------------------------------------------------------------
 
+class PipelineCancelled(Exception):
+    """Raised when a pipeline run is stopped by the user."""
+    pass
+
+
 # Global registry of active runners (run_id -> PipelineRunner)
 _RUNNERS = {}
 _RUNNERS_LOCK = threading.Lock()
@@ -114,11 +120,12 @@ class PipelineRunner:
     STAGE_ORDER = [
         "normalize_transcript",
         "extract_claims",
+        "consolidate_claims",
         "review_claims",
         "retrieve_evidence",
-        "verify_claims",
+        "check_claims",
         "scorecard",
-        "write_outline_and_script",
+        "fact_check_summary",
     ]
 
     def __init__(self, cfg: dict, infile: str, raw_text: str,
@@ -149,6 +156,8 @@ class PipelineRunner:
         self.status = "pending"  # pending → running → review → running → done | error
         self.current_stage = None
         self.claims = []
+        self.groups = []
+        self.group_verdicts = []
         self.verdicts = []
         self.manifest = {}
         self.report_md = None
@@ -157,6 +166,9 @@ class PipelineRunner:
         # Review synchronization
         self.review_result = None
         self._review_event = threading.Event()
+
+        # Stop / cancel
+        self._stop_event = threading.Event()
 
         # Thread
         self._thread = None
@@ -183,6 +195,17 @@ class PipelineRunner:
         """
         self.review_result = decisions
         self._review_event.set()
+
+    def stop(self):
+        """Signal the pipeline to stop at next checkpoint."""
+        self._stop_event.set()
+        # Also unblock review wait if stuck there
+        self._review_event.set()
+
+    def _check_stop(self):
+        """Raise PipelineCancelled if stop was requested."""
+        if self._stop_event.is_set():
+            raise PipelineCancelled()
 
     def emit(self, event_type: str, data: dict):
         """Push event to SSE queue."""
@@ -269,8 +292,12 @@ class PipelineRunner:
                     "model_extract": cfg["ollama"].get("model_extract"),
                     "model_verify": cfg["ollama"].get("model_verify"),
                     "model_write": cfg["ollama"].get("model_write"),
+                    "model_consolidate": cfg["ollama"].get("model_consolidate", cfg["ollama"].get("model_extract")),
+                    "model_verify_group": cfg["ollama"].get("model_verify_group", cfg["ollama"].get("model_verify")),
+                    "model_query_gen": cfg["ollama"].get("model_query_gen", cfg["ollama"].get("model_extract")),
                     "temperature_extract": cfg["ollama"].get("temperature_extract", 0.1),
                     "temperature_verify": cfg["ollama"].get("temperature_verify", 0.0),
+                    "temperature_consolidate": cfg["ollama"].get("temperature_consolidate", 0.1),
                 },
                 "budgets": cfg.get("budgets", {}),
                 "timezone": cfg.get("output", {}).get("timezone"),
@@ -279,6 +306,9 @@ class PipelineRunner:
             },
             "counts": {
                 "claims_extracted": 0,
+                "claims_consolidated": 0,
+                "duplicates_removed": 0,
+                "narrative_groups": 0,
                 "claims_kept": 0,
                 "sources": 0,
                 "snippets": 0,
@@ -309,6 +339,7 @@ class PipelineRunner:
             self._log_and_emit(log, f"RUN START run_id={self.run_id} channel={self.channel}")
 
             # ----- Stage 1: Normalize transcript -----
+            self._check_stop()
             self._log_and_emit(log, "Stage 1: normalize transcript")
             s = self._stage_start("normalize_transcript")
             transcript_json = normalize_transcript(self.raw_text)
@@ -318,6 +349,7 @@ class PipelineRunner:
             self._save_manifest()
 
             # ----- Stage 2: Extract claims -----
+            self._check_stop()
             self._log_and_emit(log, "Stage 2: extract claims")
             s = self._stage_start("extract_claims")
 
@@ -337,7 +369,8 @@ class PipelineRunner:
                 cfg["ollama"]["model_extract"],
                 transcript_json,
                 max_claims=cfg["budgets"]["max_claims"],
-                temperature=cfg["ollama"].get("temperature_extract", 0.1),
+                temperature=cfg["ollama"].get("temperature_extract", 0.0),
+                chunk_overlap=cfg["budgets"].get("extract_chunk_overlap", 8),
                 progress_callback=_extract_progress,
             )
 
@@ -359,7 +392,49 @@ class PipelineRunner:
             self._add_artifact("claims", "02_claims.json")
             self._save_manifest()
 
-            # ----- Stage 2b: Review (pause if enabled) -----
+            # ----- Stage 2b: Consolidate claims -----
+            self._check_stop()
+            self._log_and_emit(log, "Stage 2b: consolidate claims")
+            s = self._stage_start("consolidate_claims")
+            groups = []
+            if len(claims) >= 2:
+                model_consolidate = cfg["ollama"].get("model_consolidate", cfg["ollama"]["model_extract"])
+                temp_consolidate = cfg["ollama"].get("temperature_consolidate", 0.1)
+
+                def _consolidate_progress(data):
+                    self.emit("consolidate_progress", data)
+
+                claims, groups = consolidate_claims(
+                    cfg["ollama"]["base_url"],
+                    model_consolidate,
+                    claims,
+                    transcript_json,
+                    temperature=temp_consolidate,
+                    progress_callback=_consolidate_progress,
+                )
+
+                consolidated_data = {
+                    "claims": [c.model_dump() for c in claims],
+                    "groups": [g.model_dump() for g in groups],
+                }
+                with open(os.path.join(self.outdir, "02b_claims.consolidated.json"), "w", encoding="utf-8") as f:
+                    json.dump(consolidated_data, f, ensure_ascii=False, indent=2)
+                self._add_artifact("claims_consolidated", "02b_claims.consolidated.json")
+
+                dupes = self.manifest["counts"]["claims_extracted"] - len(claims)
+                self.manifest["counts"]["claims_consolidated"] = len(claims)
+                self.manifest["counts"]["duplicates_removed"] = dupes
+                self.manifest["counts"]["narrative_groups"] = len(groups)
+                self.manifest["counts"]["claims_kept"] = len(claims)
+                self.claims = claims
+                self.groups = groups
+                self._log_and_emit(log, f"Consolidation: {dupes} duplicates removed, {len(groups)} narrative groups")
+            else:
+                self._log_and_emit(log, "Skipping consolidation (fewer than 2 claims)")
+            self._stage_end("consolidate_claims", s)
+            self._save_manifest()
+
+            # ----- Stage 2c: Review (pause if enabled) -----
             if self.review_enabled:
                 self._log_and_emit(log, "Stage 2b: review claims (waiting for web input)")
                 s = self._stage_start("review_claims")
@@ -404,12 +479,57 @@ class PipelineRunner:
                 self.manifest.setdefault("timings", {})
                 self.manifest["timings"]["review_claims"] = {"skipped": True}
 
+            # Post-review group cleanup
+            if groups:
+                kept_ids = {c.claim_id for c in claims}
+                cleaned_groups = []
+                for g in groups:
+                    g.claim_ids = [cid for cid in g.claim_ids if cid in kept_ids]
+                    if len(g.claim_ids) >= 2:
+                        cleaned_groups.append(g)
+                if len(cleaned_groups) != len(groups):
+                    self._log_and_emit(log, f"Groups after review cleanup: {len(cleaned_groups)} (was {len(groups)})")
+                groups = cleaned_groups
+                self.groups = groups
+                self.manifest["counts"]["narrative_groups"] = len(groups)
+
             # ----- Stage 3: Retrieve evidence -----
+            self._check_stop()
             self._log_and_emit(log, "Stage 3: retrieve evidence")
             s = self._stage_start("retrieve_evidence")
 
             budgets = cfg["budgets"]
             deny_domains = cfg.get("searx", {}).get("deny_domains") or []
+
+            # Generate search queries via LLM (multi-query strategy)
+            generated_queries = None
+            if budgets.get("enable_query_generation", True):
+                from app.tools.query_gen import generate_queries_batch
+                model_query = cfg["ollama"].get("model_query_gen", cfg["ollama"]["model_extract"])
+                temp_query = float(cfg["ollama"].get("temperature_query_gen", 0.3))
+                num_q = int(budgets.get("queries_per_claim", 3))
+                workers_q = int(budgets.get("query_gen_workers", 3))
+
+                self._log_and_emit(log, f"Generating search queries ({num_q} per claim, {workers_q} workers)...")
+
+                def _query_gen_progress(data):
+                    self.emit("retrieve_progress", {
+                        "claim_idx": data.get("current", 0),
+                        "total_claims": data.get("total", len(claims)),
+                        "claim_id": data.get("claim_id", ""),
+                        "status": "generating_queries",
+                    })
+
+                generated_queries = generate_queries_batch(
+                    cfg["ollama"]["base_url"], model_query, claims,
+                    num_queries=num_q, temperature=temp_query, max_workers=workers_q,
+                    progress_callback=_query_gen_progress,
+                )
+                self._log_and_emit(log, f"Generated search queries for {len(generated_queries)} claims")
+
+                with open(os.path.join(self.outdir, "02d_queries.json"), "w", encoding="utf-8") as f:
+                    json.dump(generated_queries, f, ensure_ascii=False, indent=2)
+                self._add_artifact("generated_queries", "02d_queries.json")
 
             def _retrieve_progress(data):
                 self.emit("retrieve_progress", data)
@@ -434,6 +554,7 @@ class PipelineRunner:
                 snippet_max_chars=budgets.get("snippet_max_chars", 1200),
                 deny_domains=deny_domains,
                 progress_callback=_retrieve_progress,
+                generated_queries=generated_queries,
             )
 
             # Emit final counts BEFORE stage_end so UI counters
@@ -479,9 +600,10 @@ class PipelineRunner:
             }
             self._save_manifest()
 
-            # ----- Stage 4: Verify claims -----
-            self._log_and_emit(log, "Stage 4: verify claims")
-            s = self._stage_start("verify_claims")
+            # ----- Stage 4: Check claims -----
+            self._check_stop()
+            self._log_and_emit(log, "Stage 4: check claims")
+            s = self._stage_start("check_claims")
 
             from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -505,6 +627,7 @@ class PipelineRunner:
             with ThreadPoolExecutor(max_workers=verify_workers) as executor:
                 futures = {executor.submit(_verify_task, c): c for c in claims}
                 for fut in as_completed(futures):
+                    self._check_stop()
                     claim_id, v, sec = fut.result()
                     results_by_id[claim_id] = (v, sec)
                     verified_count += 1
@@ -529,7 +652,7 @@ class PipelineRunner:
                 per_claim_secs.append(sec)
 
             self.verdicts = verdicts
-            self._stage_end("verify_claims", s)
+            self._stage_end("check_claims", s)
 
             with open(os.path.join(self.outdir, "05_verdicts.json"), "w", encoding="utf-8") as f:
                 json.dump([v.model_dump() for v in verdicts], f, ensure_ascii=False, indent=2)
@@ -538,17 +661,44 @@ class PipelineRunner:
             self.manifest["counts"]["verdicts"] = len(verdicts)
 
             if per_claim_secs:
-                self.manifest["timings"].setdefault("verify_claims", {})
-                self.manifest["timings"]["verify_claims"]["per_claim_sec"] = {
+                self.manifest["timings"].setdefault("check_claims", {})
+                self.manifest["timings"]["check_claims"]["per_claim_sec"] = {
                     "min": round(min(per_claim_secs), 4),
                     "max": round(max(per_claim_secs), 4),
                     "avg": round(sum(per_claim_secs) / len(per_claim_secs), 4),
                     "n": len(per_claim_secs),
                 }
 
+            # Group verification (narrative-level)
+            group_verdicts = []
+            if groups:
+                model_verify_group = cfg["ollama"].get("model_verify_group", cfg["ollama"]["model_verify"])
+                self._log_and_emit(log, f"Verifying {len(groups)} narrative groups")
+                for gi, g in enumerate(groups, 1):
+                    self._check_stop()
+                    self._log_and_emit(log, f"Group {gi}/{len(groups)}: {g.group_id} — {g.narrative_thesis[:60]}...")
+                    gv = verify_group(
+                        cfg["ollama"]["base_url"],
+                        model_verify_group,
+                        g,
+                        claims,
+                        verdicts,
+                        evidence_by_claim,
+                        transcript_json=transcript_json,
+                        temperature=cfg["ollama"].get("temperature_verify", 0.0),
+                    )
+                    group_verdicts.append(gv)
+                    self._log_and_emit(log, f"Group {g.group_id}: {gv.narrative_rating} (confidence={gv.narrative_confidence})")
+
+                self.group_verdicts = group_verdicts
+                with open(os.path.join(self.outdir, "05b_group_verdicts.json"), "w", encoding="utf-8") as f:
+                    json.dump([gv.model_dump() for gv in group_verdicts], f, ensure_ascii=False, indent=2)
+                self._add_artifact("group_verdicts", "05b_group_verdicts.json")
+
             self._save_manifest()
 
             # ----- Stage 5: Scorecard -----
+            self._check_stop()
             self._log_and_emit(log, "Stage 5: scorecard")
             s = self._stage_start("scorecard")
             counts, red_flags, tiers = tally(verdicts)
@@ -575,9 +725,10 @@ class PipelineRunner:
             }
             self._save_manifest()
 
-            # ----- Stage 6: Write outline + script -----
-            self._log_and_emit(log, "Stage 6: write outline + script")
-            s = self._stage_start("write_outline_and_script")
+            # ----- Stage 6: Fact-check summary -----
+            self._check_stop()
+            self._log_and_emit(log, "Stage 6: fact-check summary")
+            s = self._stage_start("fact_check_summary")
             writer_md = write_outline_and_script(
                 cfg["ollama"]["base_url"],
                 cfg["ollama"]["model_write"],
@@ -586,8 +737,10 @@ class PipelineRunner:
                 scorecard_md,
                 claims,
                 self.manifest["channel"]["raw"],
+                groups=groups,
+                group_verdicts=group_verdicts,
             )
-            self._stage_end("write_outline_and_script", s)
+            self._stage_end("fact_check_summary", s)
 
             write_text(os.path.join(self.outdir, "07_summary.md"), writer_md)
             self._add_artifact("writer_md", "07_summary.md")
@@ -626,6 +779,14 @@ class PipelineRunner:
                 "outdir": self.outdir,
             })
             self.status = "done"
+
+        except PipelineCancelled:
+            self.manifest["status"] = "cancelled"
+            self._save_manifest()
+            log.log("RUN CANCELLED by user")
+            self._log_and_emit(log, "Run cancelled by user.")
+            self.emit("done", {"status": "cancelled", "message": "Run cancelled by user"})
+            self.status = "cancelled"
 
         except Exception as e:
             self.manifest["status"] = "error"

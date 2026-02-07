@@ -2,7 +2,7 @@
 
 def tally(verdicts):
     """Count verdicts by rating and collect red flags and source tiers."""
-    counts = {"VERIFIED":0, "LIKELY TRUE":0, "INSUFFICIENT EVIDENCE":0, "CONFLICTING EVIDENCE":0, "LIKELY FALSE":0, "FALSE":0}
+    counts = {"TRUE":0, "LIKELY TRUE":0, "INSUFFICIENT EVIDENCE":0, "CONFLICTING EVIDENCE":0, "LIKELY FALSE":0, "FALSE":0}
     red_flags = {}
     tiers = {}
 
