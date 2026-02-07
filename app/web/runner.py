@@ -118,6 +118,7 @@ class PipelineRunner:
     """
 
     STAGE_ORDER = [
+        "fetch_transcript",
         "normalize_transcript",
         "extract_claims",
         "consolidate_claims",
@@ -129,19 +130,28 @@ class PipelineRunner:
     ]
 
     def __init__(self, cfg: dict, infile: str, raw_text: str,
-                 channel: str = None, review_enabled: bool = False):
+                 channel: str = None, review_enabled: bool = False,
+                 youtube_url: str = None):
         self.cfg = cfg
-        self.infile = infile
-        self.raw_text = raw_text
+        self.infile = infile           # Can be None when youtube_url is set
+        self.raw_text = raw_text       # Can be None when youtube_url is set
         self.review_enabled = review_enabled
+        self.youtube_url = youtube_url
 
-        inferred_channel = _infer_channel_from_filename(infile)
+        if infile:
+            inferred_channel = _infer_channel_from_filename(infile)
+        else:
+            inferred_channel = "Unknown"
         self.channel = (channel or inferred_channel).strip() or "Unknown"
 
         self.run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-        transcript_name = os.path.basename(infile)
-        transcript_base = re.sub(r"\.(txt|md)$", "", transcript_name, flags=re.IGNORECASE)
+        if infile:
+            transcript_name = os.path.basename(infile)
+            transcript_base = re.sub(r"\.(txt|md)$", "", transcript_name, flags=re.IGNORECASE)
+        else:
+            transcript_name = "youtube_pending"
+            transcript_base = "youtube_pending"
         channel_slug = _slugify(self.channel, max_len=40)
         transcript_slug = _slugify(transcript_base, max_len=60)
 
@@ -286,6 +296,9 @@ class PipelineRunner:
                 "slug": transcript_slug,
             },
             "outdir": self.outdir,
+            "youtube_url": self.youtube_url,
+            "transcript_source": "youtube" if self.youtube_url else "file",
+            "youtube_metadata": None,
             "config": {
                 "ollama": {
                     "base_url": cfg["ollama"]["base_url"],
@@ -328,21 +341,83 @@ class PipelineRunner:
         self._add_artifact("manifest", "run.json")
         self._add_artifact("log", "run.log")
 
-        # Save raw transcript
-        raw_copy_name = "00_transcript.raw.txt"
-        with open(os.path.join(self.outdir, raw_copy_name), "w", encoding="utf-8") as f:
-            f.write(self.raw_text)
-        self._add_artifact("transcript_raw", raw_copy_name)
+        # Save raw transcript (if available; YouTube mode saves after fetch)
+        if self.raw_text:
+            raw_copy_name = "00_transcript.raw.txt"
+            with open(os.path.join(self.outdir, raw_copy_name), "w", encoding="utf-8") as f:
+                f.write(self.raw_text)
+            self._add_artifact("transcript_raw", raw_copy_name)
         self._save_manifest()
 
         try:
             self._log_and_emit(log, f"RUN START run_id={self.run_id} channel={self.channel}")
+
+            # ----- Stage 0 (conditional): Fetch YouTube transcript -----
+            if self.youtube_url:
+                self._check_stop()
+                self._log_and_emit(log, f"Fetching YouTube transcript from {self.youtube_url}")
+                s = self._stage_start("fetch_transcript")
+
+                from app.tools.youtube import fetch_youtube_transcript
+
+                def _yt_progress(data):
+                    self.emit("youtube_progress", data)
+                    status = data.get("status", "")
+                    detail = data.get("detail", "")
+                    if status in ("trying_captions", "captions_found", "no_captions",
+                                  "downloading_audio", "transcribing", "done"):
+                        self._log_and_emit(log, f"YouTube: {status} — {detail}")
+
+                yt_result = fetch_youtube_transcript(
+                    self.youtube_url, progress_callback=_yt_progress,
+                )
+                self.raw_text = yt_result["raw_text"]
+                meta = yt_result["metadata"]
+
+                # Auto-set channel from YouTube metadata
+                if meta.get("channel") and self.channel in ("Unknown", ""):
+                    self.channel = meta["channel"]
+
+                # Save transcript to inbox/ and update self.infile
+                safe_title = _slugify(meta.get("title") or yt_result["video_id"], max_len=80)
+                self.infile = os.path.join("inbox", f"{safe_title}.txt")
+                os.makedirs("inbox", exist_ok=True)
+                with open(self.infile, "w", encoding="utf-8") as f:
+                    f.write(self.raw_text)
+
+                # Save raw transcript to run output
+                raw_copy_name = "00_transcript.raw.txt"
+                with open(os.path.join(self.outdir, raw_copy_name), "w", encoding="utf-8") as f:
+                    f.write(self.raw_text)
+                self._add_artifact("transcript_raw", raw_copy_name)
+
+                # Update manifest with YouTube info
+                self.manifest["youtube_metadata"] = meta
+                self.manifest["transcript_source"] = yt_result.get("source", "unknown")
+                self.manifest["channel"]["raw"] = self.channel
+                self.manifest["infile"] = self.infile
+                self.manifest["transcript_filename"] = os.path.basename(self.infile)
+
+                self._stage_end("fetch_transcript", s)
+                self._log_and_emit(log, f"YouTube transcript fetched ({yt_result['source']}): {len(self.raw_text)} chars")
+                self._save_manifest()
+                self._check_stop()
+            else:
+                # Mark fetch_transcript as skipped for file-upload runs
+                self.manifest.setdefault("timings", {})
+                self.manifest["timings"]["fetch_transcript"] = {"skipped": True}
 
             # ----- Stage 1: Normalize transcript -----
             self._check_stop()
             self._log_and_emit(log, "Stage 1: normalize transcript")
             s = self._stage_start("normalize_transcript")
             transcript_json = normalize_transcript(self.raw_text)
+            # Populate video metadata from YouTube if available
+            if self.manifest.get("youtube_metadata"):
+                yt_meta = self.manifest["youtube_metadata"]
+                transcript_json["video"]["title"] = yt_meta.get("title")
+                transcript_json["video"]["url"] = yt_meta.get("url")
+                transcript_json["video"]["channel"] = yt_meta.get("channel")
             write_json(os.path.join(self.outdir, "01_transcript.normalized.json"), transcript_json)
             self._stage_end("normalize_transcript", s)
             self._add_artifact("transcript_normalized", "01_transcript.normalized.json")

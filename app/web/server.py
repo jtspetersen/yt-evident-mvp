@@ -78,6 +78,27 @@ async def upload(
     return RedirectResponse(url=f"/run/{runner.run_id}", status_code=303)
 
 
+@app.post("/url")
+async def submit_url(
+    request: Request,
+    youtube_url: str = Form(...),
+    channel: str = Form(""),
+    review: bool = Form(False),
+):
+    """Accept YouTube URL, start pipeline with transcript fetching, redirect to progress."""
+    cfg = load_config()
+    runner = PipelineRunner(
+        cfg=cfg,
+        infile=None,
+        raw_text=None,
+        channel=channel.strip() or None,
+        review_enabled=review,
+        youtube_url=youtube_url.strip(),
+    )
+    runner.start()
+    return RedirectResponse(url=f"/run/{runner.run_id}", status_code=303)
+
+
 @app.get("/run/{run_id}", response_class=HTMLResponse)
 async def run_progress(request: Request, run_id: str):
     """Progress dashboard — auto-updates via SSE."""

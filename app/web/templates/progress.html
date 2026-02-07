@@ -59,6 +59,15 @@
     {% endfor %}
 </div>
 
+<!-- YouTube transcript fetch detail panel -->
+<div class="stage-detail" id="youtube-detail">
+    <h4>Fetching YouTube Transcript</h4>
+    <div class="detail-message" id="youtube-message">Preparing...</div>
+    <div class="detail-stats">
+        <div>Source: <strong id="youtube-source">pending</strong></div>
+    </div>
+</div>
+
 <!-- Extract claims detail panel -->
 <div class="stage-detail" id="extract-detail">
     <h4>Extracting Claims</h4>
@@ -161,6 +170,7 @@
     let sseConnected = false;
 
     // Detail panel elements
+    const youtubeDetail = document.getElementById('youtube-detail');
     const extractDetail = document.getElementById('extract-detail');
     const consolidateDetail = document.getElementById('consolidate-detail');
     const retrieveDetail = document.getElementById('retrieve-detail');
@@ -211,11 +221,13 @@
             activeStage = data.name;
 
             // Show/hide detail panels based on which stage is active
+            hidePanel(youtubeDetail);
             hidePanel(extractDetail);
             hidePanel(consolidateDetail);
             hidePanel(retrieveDetail);
             hidePanel(verifyDetail);
-            if (data.name === 'extract_claims') showPanel(extractDetail);
+            if (data.name === 'fetch_transcript') showPanel(youtubeDetail);
+            else if (data.name === 'extract_claims') showPanel(extractDetail);
             else if (data.name === 'consolidate_claims') showPanel(consolidateDetail);
             else if (data.name === 'retrieve_evidence') showPanel(retrieveDetail);
             else if (data.name === 'check_claims') showPanel(verifyDetail);
@@ -226,10 +238,42 @@
             completedStages.add(data.name);
             if (activeStage === data.name) activeStage = null;
 
+            if (data.name === 'fetch_transcript') hidePanel(youtubeDetail);
             if (data.name === 'extract_claims') hidePanel(extractDetail);
             if (data.name === 'consolidate_claims') hidePanel(consolidateDetail);
             if (data.name === 'retrieve_evidence') hidePanel(retrieveDetail);
             if (data.name === 'check_claims') hidePanel(verifyDetail);
+        }
+    });
+
+    // -- YouTube transcript fetch progress --
+    source.addEventListener('youtube_progress', function(e) {
+        const d = JSON.parse(e.data);
+        showPanel(youtubeDetail);
+
+        const msg = document.getElementById('youtube-message');
+        const srcEl = document.getElementById('youtube-source');
+
+        if (d.status === 'extracting_id') {
+            msg.textContent = 'Parsing YouTube URL...';
+        } else if (d.status === 'fetching_metadata') {
+            msg.textContent = 'Fetching video metadata...';
+        } else if (d.status === 'trying_captions') {
+            msg.textContent = 'Looking for existing YouTube captions...';
+        } else if (d.status === 'captions_found') {
+            msg.textContent = 'Captions found! Downloading transcript...';
+            srcEl.textContent = 'captions';
+        } else if (d.status === 'no_captions') {
+            msg.textContent = 'No captions available. Falling back to Whisper transcription...';
+        } else if (d.status === 'downloading_audio') {
+            msg.textContent = 'Downloading audio from YouTube...';
+            srcEl.textContent = 'whisper';
+        } else if (d.status === 'transcribing') {
+            msg.textContent = 'Transcribing audio with Whisper (this may take a few minutes)...';
+            srcEl.textContent = 'whisper';
+        } else if (d.status === 'done') {
+            msg.textContent = 'Transcript ready (' + (d.source || 'unknown') + ')';
+            srcEl.textContent = d.source || 'done';
         }
     });
 
@@ -396,6 +440,7 @@
         statusBadge.textContent = doneStatus;
         statusBadge.className = 'badge badge-' + doneStatus;
 
+        hidePanel(youtubeDetail);
         hidePanel(extractDetail);
         hidePanel(consolidateDetail);
         hidePanel(retrieveDetail);
@@ -428,6 +473,7 @@
             // This is a server-sent error event
             statusBadge.textContent = 'error';
             statusBadge.className = 'badge badge-error';
+            hidePanel(youtubeDetail);
             hidePanel(extractDetail);
             hidePanel(consolidateDetail);
             hidePanel(retrieveDetail);

@@ -281,8 +281,10 @@ def main():
     parser = argparse.ArgumentParser(description="Evident local fact-check MVP")
     parser.add_argument("--infile", type=str, default=None,
                         help="Path to transcript (.txt or .md). Defaults to newest file in inbox/.")
+    parser.add_argument("--url", type=str, default=None,
+                        help="YouTube video URL (alternative to --infile). Fetches captions or transcribes locally.")
     parser.add_argument("--channel", type=str, default=None,
-                        help="Channel/creator name for this run. If omitted, inferred from filename 'Channel - Title.txt'.")
+                        help="Channel/creator name for this run. If omitted, inferred from filename or YouTube metadata.")
     parser.add_argument("--review", action="store_true",
                         help="Interactive review: keep/drop/edit claims before retrieval+verification.")
     parser.add_argument("--quiet", action="store_true",
@@ -299,12 +301,45 @@ def main():
     else:
         os.environ["EVIDENT_LOG_LEVEL"] = "INFO"
 
-    cfg = load_config()
-    infile = pick_infile(args.infile)
-    raw_text = read_file(infile)
+    if args.url and args.infile:
+        parser.error("--url and --infile are mutually exclusive. Provide one or the other.")
 
-    inferred_channel = infer_channel_from_filename(infile)
-    channel = (args.channel or inferred_channel).strip() if (args.channel or infile) else "Unknown"
+    cfg = load_config()
+
+    # Resolve transcript input: YouTube URL or local file
+    yt_meta = None
+    if args.url:
+        from app.tools.youtube import fetch_youtube_transcript
+        print(f"Fetching transcript from YouTube: {args.url}")
+
+        def _yt_progress(data):
+            if not args.quiet:
+                status = data.get("status", "")
+                detail = data.get("detail", "")
+                print(f"  [{status}] {detail}")
+
+        yt_result = fetch_youtube_transcript(args.url, progress_callback=_yt_progress)
+        raw_text = yt_result["raw_text"]
+        yt_meta = yt_result["metadata"]
+
+        # Save transcript to inbox/ for record-keeping
+        safe_title = slugify(yt_meta.get("title") or yt_result["video_id"], max_len=80)
+        os.makedirs("inbox", exist_ok=True)
+        infile = os.path.join("inbox", f"{safe_title}.txt")
+        with open(infile, "w", encoding="utf-8") as f:
+            f.write(raw_text)
+        print(f"Transcript saved to: {infile}")
+    else:
+        infile = pick_infile(args.infile)
+        raw_text = read_file(infile)
+
+    # Resolve channel name: --channel > YouTube metadata > filename inference
+    if args.channel:
+        channel = args.channel.strip()
+    elif yt_meta and yt_meta.get("channel"):
+        channel = yt_meta["channel"]
+    else:
+        channel = infer_channel_from_filename(infile) or "Unknown"
 
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -354,6 +389,9 @@ def main():
             "slug": transcript_slug,
         },
         "outdir": outdir,
+        "youtube_url": args.url or None,
+        "transcript_source": "youtube" if args.url else "file",
+        "youtube_metadata": yt_meta,
 
         "config": {
             "ollama": {
@@ -420,6 +458,10 @@ def main():
         log.log("Stage 1: normalize transcript")
         s = stage_start(manifest, "normalize_transcript")
         transcript_json = normalize_transcript(raw_text)
+        if yt_meta:
+            transcript_json["video"]["title"] = yt_meta.get("title")
+            transcript_json["video"]["url"] = yt_meta.get("url")
+            transcript_json["video"]["channel"] = yt_meta.get("channel")
         write_json(os.path.join(outdir, "01_transcript.normalized.json"), transcript_json)
         stage_end(manifest, "normalize_transcript", s)
         add_artifact(manifest, "transcript_normalized", "01_transcript.normalized.json")

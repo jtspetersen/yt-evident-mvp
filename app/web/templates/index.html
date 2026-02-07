@@ -5,23 +5,41 @@
 {% block content %}
 <hgroup>
     <h1>New Fact-Check Run</h1>
-    <p>Upload a transcript to begin fact-checking.</p>
+    <p>Upload a transcript or provide a YouTube URL to begin fact-checking.</p>
 </hgroup>
 
-<form action="/upload" method="post" enctype="multipart/form-data" id="upload-form">
-    <!-- Drop zone -->
-    <div class="drop-zone" id="drop-zone" onclick="document.getElementById('file-input').click()">
-        <p><strong>Drag &amp; drop a transcript file here</strong></p>
-        <p><small>or click to browse (.txt, .md)</small></p>
-        <input type="file" name="transcript" id="file-input" accept=".txt,.md" required>
-        <p id="file-name" style="display:none; margin-top:0.5rem;"></p>
+<!-- Input mode toggle -->
+<div role="group" style="margin-bottom:1rem;">
+    <button type="button" id="mode-file-btn" onclick="setMode('file')">Upload File</button>
+    <button type="button" id="mode-url-btn" class="secondary" onclick="setMode('url')">YouTube URL</button>
+</div>
+
+<form action="/upload" method="post" enctype="multipart/form-data" id="main-form">
+    <!-- File input section (visible by default) -->
+    <div id="file-input-section">
+        <div class="drop-zone" id="drop-zone" onclick="document.getElementById('file-input').click()">
+            <p><strong>Drag &amp; drop a transcript file here</strong></p>
+            <p><small>or click to browse (.txt, .md)</small></p>
+            <input type="file" name="transcript" id="file-input" accept=".txt,.md" required>
+            <p id="file-name" style="display:none; margin-top:0.5rem;"></p>
+        </div>
+    </div>
+
+    <!-- YouTube URL input section (hidden by default) -->
+    <div id="url-input-section" style="display:none;">
+        <label for="youtube-url">
+            YouTube Video URL
+            <input type="url" name="youtube_url" id="youtube-url"
+                   placeholder="https://www.youtube.com/watch?v=...">
+        </label>
+        <small>Supports youtube.com/watch, youtu.be, shorts, and embed URLs</small>
     </div>
 
     <!-- Channel name -->
     <label for="channel" style="margin-top:1rem;">
         Channel / Creator Name
         <input type="text" name="channel" id="channel"
-               placeholder="Auto-inferred from filename if left blank">
+               placeholder="Auto-inferred from filename or YouTube metadata if left blank">
     </label>
 
     <!-- Options -->
@@ -41,10 +59,46 @@
 {% block scripts %}
 <script>
 (function() {
+    const form = document.getElementById('main-form');
     const dropZone = document.getElementById('drop-zone');
     const fileInput = document.getElementById('file-input');
     const fileName = document.getElementById('file-name');
     const submitBtn = document.getElementById('submit-btn');
+    const fileSection = document.getElementById('file-input-section');
+    const urlSection = document.getElementById('url-input-section');
+    const urlInput = document.getElementById('youtube-url');
+    const fileModeBtn = document.getElementById('mode-file-btn');
+    const urlModeBtn = document.getElementById('mode-url-btn');
+
+    let currentMode = 'file';
+
+    // Mode toggle
+    window.setMode = function(mode) {
+        currentMode = mode;
+        if (mode === 'url') {
+            fileSection.style.display = 'none';
+            urlSection.style.display = 'block';
+            form.action = '/url';
+            form.enctype = 'application/x-www-form-urlencoded';
+            fileInput.removeAttribute('required');
+            fileInput.value = '';
+            urlInput.setAttribute('required', '');
+            fileModeBtn.className = 'secondary';
+            urlModeBtn.className = '';
+            submitBtn.textContent = 'Fetch & Fact-Check';
+        } else {
+            fileSection.style.display = 'block';
+            urlSection.style.display = 'none';
+            form.action = '/upload';
+            form.enctype = 'multipart/form-data';
+            urlInput.removeAttribute('required');
+            urlInput.value = '';
+            fileInput.setAttribute('required', '');
+            urlModeBtn.className = 'secondary';
+            fileModeBtn.className = '';
+            submitBtn.textContent = 'Start Fact-Check';
+        }
+    };
 
     // Drag & drop
     ['dragenter', 'dragover'].forEach(evt => {
@@ -80,10 +134,10 @@
     }
 
     // Prevent double submit
-    document.getElementById('upload-form').addEventListener('submit', () => {
+    form.addEventListener('submit', () => {
         submitBtn.disabled = true;
         submitBtn.setAttribute('aria-busy', 'true');
-        submitBtn.textContent = 'Starting...';
+        submitBtn.textContent = currentMode === 'url' ? 'Fetching...' : 'Starting...';
     });
 })();
 </script>
