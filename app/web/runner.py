@@ -399,8 +399,22 @@ class PipelineRunner:
                 self.manifest["youtube_metadata"] = meta
                 self.manifest["transcript_source"] = yt_result.get("source", "unknown")
                 self.manifest["channel"]["raw"] = self.channel
+                self.manifest["channel"]["inferred"] = self.channel
+                self.manifest["channel"]["slug"] = _slugify(self.channel, max_len=40)
                 self.manifest["infile"] = self.infile
                 self.manifest["transcript_filename"] = os.path.basename(self.infile)
+
+                # Rename outdir now that we know the channel and title
+                transcript_base = re.sub(r"\.(txt|md)$", "", os.path.basename(self.infile), flags=re.IGNORECASE)
+                new_folder = f"{self.run_id}__{_slugify(self.channel, max_len=40)}__{_slugify(transcript_base, max_len=60)}"
+                new_outdir = os.path.join("runs", new_folder)
+                if new_outdir != self.outdir:
+                    try:
+                        os.rename(self.outdir, new_outdir)
+                        self.outdir = new_outdir
+                        self.manifest["outdir"] = new_outdir
+                    except OSError:
+                        pass  # Keep original if rename fails
 
                 self._stage_end("fetch_transcript", s)
                 self._log_and_emit(log, f"YouTube transcript fetched ({yt_result['source']}): {len(self.raw_text)} chars")
