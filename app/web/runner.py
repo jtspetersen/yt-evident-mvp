@@ -272,8 +272,12 @@ class PipelineRunner:
         self.status = "running"
         self.emit("status", {"status": "running"})
 
-        transcript_name = os.path.basename(self.infile)
-        transcript_base = re.sub(r"\.(txt|md)$", "", transcript_name, flags=re.IGNORECASE)
+        if self.infile:
+            transcript_name = os.path.basename(self.infile)
+            transcript_base = re.sub(r"\.(txt|md)$", "", transcript_name, flags=re.IGNORECASE)
+        else:
+            transcript_name = "youtube_pending"
+            transcript_base = "youtube_pending"
         channel_slug = _slugify(self.channel, max_len=40)
         transcript_slug = _slugify(transcript_base, max_len=60)
 
@@ -288,7 +292,7 @@ class PipelineRunner:
             "transcript_filename": transcript_name,
             "channel": {
                 "raw": self.channel,
-                "inferred": _infer_channel_from_filename(self.infile),
+                "inferred": _infer_channel_from_filename(self.infile) if self.infile else self.channel,
                 "slug": channel_slug,
             },
             "transcript": {
